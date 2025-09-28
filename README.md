@@ -51,7 +51,7 @@ Utility functions for Kobo data ingestion and preparation. Includes retrieval of
 
 - **8_cleaning.Rmd**
 
-  Applies cleaning and corrections to the 6 datasets. Merges manual and dashboard correction logs (with/without `_index`), handles anthropometry corrections, drops duplicates and incomplete cases, fixes sample IDs, and applies geo-checks (e.g., Mayukwayukwa buffer). Ensures consistency across datasets and assigns final stratum variable. Saves outputs
+  Applies cleaning and corrections to the 6 datasets. Merges manual and dashboard correction logs (with/without `_index`), handles anthropometry corrections, drops duplicates and incomplete cases, fixes sample IDs, and applies geo-checks. Ensures consistency across datasets and assigns final stratum variable. Saves outputs
 
 4. **Final data preparation**
 
@@ -72,8 +72,8 @@ Utility functions for Kobo data ingestion and preparation. Includes retrieval of
 
 | Step | Script | Purpose |
 |------|--------|---------|
-| 0 | `1_params.R` | Defines Kobo asset names and key survey variables |
-| 0 | `2_funs.R` | Utility functions for Kobo ingestion/flattening, roster harmonisation, merging multi-asset data |
+| 0 | `params.R` | Defines Kobo asset names and key survey variables |
+| 0 | `funs.R` | Utility functions for Kobo ingestion/flattening, roster harmonisation, merging multi-asset data |
 | 1 | `1_Data_import.Rmd` | Imports Kobo raw data (via API token); caches and saves as `.rds` |
 | 2 | `2_Merge_kobo_assests.Rmd` | Flattens repeat groups, propagates keys, merges 3 projects into one dataset |
 | 3 | `3_Repeat_groups_HH_flat.Rmd` | Cleans/reshapes repeat groups into wide format for integration with main survey data |
