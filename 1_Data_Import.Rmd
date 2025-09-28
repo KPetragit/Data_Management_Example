@@ -1,0 +1,68 @@
+---
+title: "1_Data_Import"
+author: "Global Survey Team/Petra Kaps"
+date: "2025-06-11"
+output: html_document
+---
+
+# 1. Data Import 
+This script is a step 1 in data management of FDS Zambia - Data import from Kobo 
+
+###Step 1: Create an Renviron file and add the server details and token.
+####KOBOTOOLBOX_URL=https://kobo.unhcr.org
+####KOBOTOOLBOX_TOKEN=your_api_token - you can get it from Kobo ZAMBIA ACCOUNT
+####kobo_token = kobo_token(username = "XXX",  password = "*____", url = "XXX")
+####*DO NOT COMMIT AND PUSH YOUR .Renviron file!!*
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+## Load packages
+if (!requireNamespace("pacman", quietly = TRUE)) {
+install.packages("pacman")
+}
+
+pacman::p_load(readxl, purrr, scales, lubridate, haven, labelled, shiny, shinydashboard,
+               shinyWidgets, shinyauthr, shinyjs, tidyverse, fusen, plotly,
+               unhcrthemes, ggforce, ggridges, DT, bslib, readr, writexl, pins, sparkline, 
+               leaflet, shinyBS, mapboxer, zscorer, rlang, nipnTK, rsconnect, dm, robotoolbox,
+               Microsoft365R,expss)
+```
+```{r}
+
+source("params.R") # Load parameters
+source("funs.R") # Load functions
+source(".Renviron") # Load API keys
+```
+
+# Load and merge data
+
+```{r}
+.asset_cache <- new.env()
+
+df_raw <- list(
+  data_import(asset_name1),
+  data_import(asset_name2),
+  data_import(asset_name3)
+)
+```
+```{r}
+saveRDS(df_raw, "df_list_ZAM_raw_0.rds")
+#This should go to RIDL as 0_RAW
+
+```
+```{r}
+df_list_ZAM_raw_0 <- readRDS("df_list_ZAM_raw_0.rds")
+
+```
+**DO NOT PUSH ANY SAVED DATA SETS** 
+
+
+
+
+
+
+
+

@@ -1,0 +1,87 @@
+---
+title: "5_Rotation_groups"
+author: "Global Survey Team/Petra Kaps"
+date: "2025-06-25"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+
+## Load packages
+if (!requireNamespace("pacman", quietly = TRUE)) {
+install.packages("pacman")
+}
+
+pacman::p_load(readxl, purrr, scales, lubridate, haven, labelled, shiny, shinydashboard,
+               shinyWidgets, shinyauthr, shinyjs, tidyverse, fusen, plotly,
+               unhcrthemes, ggforce, ggridges, DT, bslib, readr, writexl, pins, sparkline, 
+               leaflet, shinyBS, mapboxer, zscorer, rlang, nipnTK, rsconnect, dm, robotoolbox,
+               Microsoft365R,expss)
+```
+##Step 5: Rotation groups 
+This scripts prepares all rotation groups in the FDS datatset
+
+```{r}
+ZAM_5_datasets_5 <- readRDS("ZAM_5_datasets_5.rds")
+```
+
+
+1. Assets 
+
+```{r}
+
+# Create pairs automatically from the dataframe columns based on "g2_" prefix
+# pairs: names are first-order vars, values are corresponding g2_ vars
+
+create_pairs_from_df <- function(df) {
+  g2_vars <- names(df)[str_starts(names(df), "g2_")]
+  pairs <- list()
+  
+  for (g2_var in g2_vars) {
+    base_var <- str_remove(g2_var, "^g2_")
+    if (base_var %in% names(df)) {
+      pairs[[base_var]] <- g2_var
+    }
+  }
+  return(pairs)
+}
+
+# Merge function as before
+merge_paired_vars <- function(df, pairs) {
+  for (var in names(pairs)) {
+    g2_var <- pairs[[var]]
+    df <- df %>%
+      mutate(
+        !!var := if_else(is.na(.data[[var]]), .data[[g2_var]], .data[[var]])
+      )
+  }
+  return(df)
+}
+
+
+```
+```{r}
+#Apply function on main dataset
+pairs_main <- create_pairs_from_df(ZAM_5_datasets_5$main)
+
+ZAM_5_datasets_5$main <- merge_paired_vars(ZAM_5_datasets_5$main, pairs_main) %>%
+  select(-starts_with("g2_"))
+
+```
+```{r}
+#Apply function on RA_adult dataset
+pairs_RA_adult <- create_pairs_from_df(ZAM_5_datasets_5$RA_adult)
+
+ZAM_5_datasets_5$RA_adult <- merge_paired_vars(ZAM_5_datasets_5$RA_adult, pairs_RA_adult) %>%
+  select(-starts_with("g2_"))
+```
+
+```{r}
+saveRDS(ZAM_5_datasets_5, "ZAM_5_datasets_withrotation_6.rds")
+```
+
+

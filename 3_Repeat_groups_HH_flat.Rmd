@@ -1,0 +1,899 @@
+---
+title: "3_Repeat_groups"
+author: "Global Survey Team/Petra Kaps"
+date: "2025-06-19"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+
+## Load packages
+if (!requireNamespace("pacman", quietly = TRUE)) {
+install.packages("pacman")
+}
+
+pacman::p_load(readxl, purrr, scales, lubridate, haven, labelled, shiny, shinydashboard,
+               shinyWidgets, shinyauthr, shinyjs, tidyverse, fusen, plotly,
+               unhcrthemes, ggforce, ggridges, DT, bslib, readr, writexl, pins, sparkline, 
+               leaflet, shinyBS, mapboxer, zscorer, rlang, nipnTK, rsconnect, dm, robotoolbox,
+               Microsoft365R,expss)
+```
+
+##Step 3: Incorporate and clean repeat groups into the main data set, as well as the roster. 
+The final "roster" dataset will be made at a later step, but starting here as we need to do so in order to incorporate the repeat groups. Cleaning here is done to remove the repeated parent variables which inside the child tables. 
+
+```{r}
+df_ZAM_raw_flat_merged_2 <- readRDS("df_ZAM_raw_flat_merged_2.rds")
+```
+List of repeat groups at household level: 
+"contactAttempt" 
+"group_ExpShock02"
+"group_ExpShock03"
+"sender_nms" 
+"remittance_sender_roster"
+"recipient_nms" 
+"remittance_recipient_roster" 
+"ScProtec02_group"
+"programme_group"
+"ScProtec13_group"
+"ScProtec14_group" 
+"plot_name"
+"plot_roster_info"
+"crop_roster"
+"repeat_IncSource2"
+"rptEduc16_17"
+"Livestock_repeat"
+"Byproduct_repeat"
+"Intro_06a_repeat" 
+
+List of repeat groups at individual level: 
+"hhroster"
+"HHmemberInfo"
+"identification_questions_repeat"
+"rosterPart2"
+"Education"
+"lang"
+"dis_remembering"
+"dis_self_care"
+"dis_communicating"
+"dis_seeing"
+"dis_hearing"
+"dis_walking"
+"gp_migrant"
+
+###Step 3.1 - main repeat groups - household level 
+
+####1. Contact attempts - "contactAttempt" - Intro_12
+Variable included in the "contactAttempt" group: 
+contactnote
+Intro_10
+Intro_11
+Intro_12
+cont
+
+```{r}
+df_ZAM_clean_repeat3 <- list()
+```
+
+
+```{r}
+keep_vars_contact <- c("source", "_index", "_parent_index", "_parent_table_name", "_uuid", "Intro_06", 
+               "contactnote", "Intro_10", "Intro_11", "Intro_12", "cont")
+
+df_ZAM_clean_repeat3$contactAttempt <- df_ZAM_raw_flat_merged_2$contactAttempt %>%
+  select(any_of(keep_vars_contact))
+
+```
+
+```{r}
+df_ZAM_clean_repeat3$contactAttempt <- df_ZAM_clean_repeat3$contactAttempt %>%
+  arrange(`_uuid`, `_index`) %>%                           # Sort by `_uuid` and `_index`
+  group_by(`_uuid`) %>%                                    # Group by `_uuid`
+  mutate(count = row_number()) %>%                         # Number rows per `_uuid`
+  ungroup() %>%                                            # Ungroup for next ops
+  select(-Intro_12) %>%                                    # Remove `Intro_12` column temporarily
+  distinct() %>%                                           # Keep unique rows without `Intro_12`
+  left_join(                                              # Join back wide `Intro_12` columns
+    df_ZAM_raw_flat_merged_2$contactAttempt %>%
+      arrange(`_uuid`, `_index`) %>%
+      group_by(`_uuid`) %>%
+      mutate(count = row_number()) %>%
+      ungroup() %>%
+      select(`_uuid`, count, Intro_12) %>%
+      pivot_wider(
+        names_from = count,
+        values_from = Intro_12,
+        names_prefix = "Intro_12"
+      ),
+    by = "_uuid"
+  ) %>%
+  mutate(
+    Intro_12_Final = coalesce(!!!select(., starts_with("Intro_12")))  # First non-NA value in Intro_12 columns
+  )
+
+
+repeat_vars <- c("contactnote", "Intro_10", "Intro_11", "Intro_12", "cont")
+
+df_ZAM_clean_repeat3$contactAttempt <- df_ZAM_raw_flat_merged_2$contactAttempt %>%
+  select(any_of(c("source", "_parent_index", "_index", "_parent_table_name", "_uuid", "Intro_06", repeat_vars))) %>%
+  arrange(`_uuid`, `_index`) %>%
+  group_by(`_uuid`) %>%
+  mutate(count = row_number()) %>%
+  ungroup() %>%
+  select(-`_index`) %>%
+  pivot_wider(
+    id_cols = c(`_uuid`, "source", "_parent_index", "_parent_table_name", "Intro_06"),
+    names_from = count,
+    values_from = all_of(repeat_vars),
+    names_sep = ""
+  ) %>%
+  mutate(
+    Intro_12_Final = coalesce(!!!select(., starts_with("Intro_12")))
+  )
+
+
+```
+
+####2. Experience of shocks - "group_ExpShock02" 
+
+After ExpShock01
+```{r}
+keep_vars_shocks2 <- c("source", "_index", "_parent_index", "_parent_table_name", "_uuid", "Intro_06", "ExpShock02", "current_shock_a", "ExpShock02_specify", "ExpShock02_note")
+
+df_ZAM_clean_repeat3$group_ExpShock02 <- df_ZAM_raw_flat_merged_2$group_ExpShock02 %>%
+  select(any_of(keep_vars_shocks2))
+```
+
+```{r}
+df_ZAM_clean_repeat3$group_ExpShock02 <- df_ZAM_clean_repeat3$group_ExpShock02 %>%
+  arrange(`_uuid`, `_index`) %>%  # order by uuid and repeat row index
+  group_by(`_uuid`) %>%
+  mutate(count = row_number()) %>%  # generate repeat instance count per uuid
+  ungroup() %>%
+  select(-`_index`) %>%  # drop _index since you want one row per uuid
+  pivot_wider(
+    id_cols = c(`_uuid`, source, `_parent_index`, `_parent_table_name`, Intro_06),
+    names_from = count,
+    values_from = c(ExpShock02, current_shock_a, ExpShock02_specify, ExpShock02_note),
+    names_sep = ""
+  )
+
+```
+```{r}
+existing_cols <- colnames(df_ZAM_clean_repeat3$group_ExpShock02)
+repeat_nums <- unique(as.integer(str_extract(existing_cols, "(?<=ExpShock02)\\d+")))
+repeat_nums <- repeat_nums[!is.na(repeat_nums)]
+max_repeats <- max(repeat_nums)
+
+vars_shocks2 <- c("ExpShock02", "current_shock_a", "ExpShock02_specify", "ExpShock02_note")
+
+old_names <- c()
+new_names <- c()
+for (i in seq_len(max_repeats)) {
+  for (v in vars_shocks2) {
+    old_names <- c(old_names, paste0(v, i))
+    new_names <- c(new_names, paste0("Shock", i, "_", v))
+  }
+}
+
+# Rename columns dynamically, use all_of()
+df_ZAM_clean_repeat3$group_ExpShock02 <-df_ZAM_clean_repeat3$group_ExpShock02 %>%
+  rename_with(~ setNames(new_names, old_names)[.x], .cols = all_of(old_names))
+```
+
+####3. Experience of shocks - "group_ExpShock03" 
+
+after number_shocks
+
+```{r}
+keep_vars_shocks3 <- c("source", "_index", "_parent_index", "_parent_table_name", "_uuid", "Intro_06", "currentshock", "ExpShock03", "calculate_ExpShock04", "ExpShock04", "ExpShock05", "ExpShock06", "ExpShock06_specify")
+
+df_ZAM_clean_repeat3$group_ExpShock03 <- df_ZAM_raw_flat_merged_2$group_ExpShock03 %>%
+  select(any_of(keep_vars_shocks3))
+```
+
+```{r}
+df_ZAM_clean_repeat3$group_ExpShock03 <- df_ZAM_clean_repeat3$group_ExpShock03 %>%
+  select(any_of(keep_vars_shocks3)) %>%
+  arrange(`_uuid`, `_index`) %>%
+  group_by(`_uuid`) %>%
+  mutate(count = row_number()) %>%
+  ungroup() %>%
+  select(-`_index`) %>%
+  pivot_wider(
+    id_cols = c(`_uuid`, source, `_parent_index`, `_parent_table_name`, Intro_06),
+    names_from = count,
+    values_from = c(currentshock, ExpShock03, calculate_ExpShock04, ExpShock04, ExpShock05, ExpShock06, ExpShock06_specify),
+    names_sep = ""
+  )
+```
+
+
+```{r}
+# Vector of current variable name patterns (excluding keys)
+vars_shocks3 <- c("currentshock", "ExpShock03", "calculate_ExpShock04", "ExpShock04", "ExpShock05", "ExpShock06", "ExpShock06_specify")
+
+# Extract columns to rename (exclude keys)
+cols_to_rename <- setdiff(colnames(df), c("_uuid", "source", "_parent_index", "_parent_table_name", "Intro_06"))
+
+# Function to generate rename mapping
+generate_rename_map <- function(cols, vars_shocks3) {
+  rename_map <- list()
+  
+  for (var in vars_shocks3) {
+    # Match columns starting with var + number(s)
+    matched_cols <- grep(paste0("^", var, "(\\d+)$"), cols, value = TRUE)
+    
+    for (col_name in matched_cols) {
+      # Extract the numeric suffix
+      number <- sub(paste0("^", var, "(\\d+)$"), "\\1", col_name)
+      
+      # Compose new name, e.g. Shock1_ExpShock03
+      new_name <- paste0("Shock", number, "_", var)
+      
+      # Add to rename map: new_name = old_name
+      rename_map[[new_name]] <- col_name
+    }
+  }
+  rename_map
+}
+
+# Generate rename map based on your df column names
+rename_map <- generate_rename_map(colnames(df_ZAM_clean_repeat3$group_ExpShock03), vars_shocks3)
+
+# Apply rename
+df_ZAM_clean_repeat3$group_ExpShock03 <- df_ZAM_clean_repeat3$group_ExpShock03 %>%
+  rename(!!!rename_map)
+
+```
+
+####4. Remittances - "sender_nms" 
+Remittances, after remittances_introduction2. 
+
+```{r}
+keep_vars_senderrem <- c("source", "_index", "_parent_index", "_parent_table_name", "_uuid", "Intro_06", "sender_names")
+
+df_ZAM_clean_repeat3$sender_nms <- df_ZAM_raw_flat_merged_2$sender_nms %>%
+  select(any_of(keep_vars_senderrem))
+```
+
+```{r}
+df_ZAM_clean_repeat3$sender_nms <- df_ZAM_raw_flat_merged_2$sender_nms %>%
+  select(any_of(keep_vars_senderrem)) %>%
+  arrange(`_uuid`, `_index`) %>%
+  group_by(`_uuid`) %>%
+  mutate(count = row_number()) %>%
+  ungroup() %>%
+  select(-`_index`) %>%
+  pivot_wider(
+    id_cols = c(`_uuid`, source, `_parent_index`, `_parent_table_name`, Intro_06),
+    names_from = count,
+    values_from = sender_names,
+    names_glue = "sender_names_{count}"
+  )
+
+
+```
+
+####4. Remittances - "remittance_sender_roster" 
+After last sender_names_X
+```{r}
+keep_vars_remittance_sender_roster <- c(
+  "source", "_index", "_parent_index", "_parent_table_name", "_uuid", "Intro_06", "sender_names",
+  "current_sender", "Remit02a", "Remit02a_specify", "Remit02b", "Remit02b_member",
+  "Remit03a", "Remit03a_specify", "Remit03b", "Remit03b_specify", "Remit04",
+  "Remit07", "Remit07_label", "Remit8", "Remit8_specify", "Remit8_label", "Remit11", "Remit12"
+)
+
+
+df_ZAM_clean_repeat3$remittance_sender_roster <- df_ZAM_raw_flat_merged_2$remittance_sender_roster %>%
+  select(any_of(keep_vars_remittance_sender_roster))
+```
+
+
+```{r}
+
+# Select relevant columns and pivot wider
+df_ZAM_clean_repeat3$remittance_sender_roster <- df_ZAM_clean_repeat3$remittance_sender_roster %>%
+  arrange(`_uuid`, `_index`) %>%
+  group_by(`_uuid`) %>%
+  mutate(count = row_number()) %>%
+  ungroup() %>%
+  select(-`_index`) %>%
+  pivot_wider(
+    id_cols = c(`_uuid`, source, `_parent_index`, `_parent_table_name`, Intro_06),
+    names_from = count,
+    values_from = c(
+      "current_sender", "Remit02a", "Remit02a_specify", "Remit02b", "Remit02b_member",
+      "Remit03a", "Remit03a_specify", "Remit03b", "Remit03b_specify", "Remit04",
+      "Remit07", "Remit07_label", "Remit8", "Remit8_specify", "Remit8_label",
+      "Remit11", "Remit12"
+    ),
+    names_sep = ""
+  )
+```
+
+####5. Remittances - "recipient_nms " 
+After "remittances_introduction4"
+```{r}
+keep_vars_recipient_nms <- c("source", "_index", "_parent_index", "_parent_table_name", "_uuid", "Intro_06", "recipient_names")
+
+df_ZAM_clean_repeat3$recipient_nms <- df_ZAM_raw_flat_merged_2$recipient_nms %>%
+  select(any_of(keep_vars_recipient_nms))
+```
+
+```{r}
+df_ZAM_clean_repeat3$recipient_nms <- df_ZAM_clean_repeat3$recipient_nms %>%
+  select(any_of(keep_vars_recipient_nms)) %>%
+  arrange(`_uuid`, `_index`) %>%
+  group_by(`_uuid`) %>%
+  mutate(count = row_number()) %>%
+  ungroup() %>%
+  select(-`_index`) %>%
+  pivot_wider(
+    id_cols = c(`_uuid`, source, `_parent_index`, `_parent_table_name`, Intro_06),
+    names_from = count,
+    values_from =recipient_names,
+    names_glue = "recipient_names_{count}"
+  )
+
+
+```
+
+####6. Remittances - "remittance_recipient_roster  " 
+After final recipient_names_X
+```{r}
+keep_vars_remittance_recipient_roster <- c(
+  "source", "_index", "_parent_index", "_parent_table_name", "_uuid", "Intro_06", "recipient_names",
+  "current_recipient", "Remit18a", "Remit18a_specify", "Remit18b",
+  "Remit19a", "Remit19a_specify", "Remit19b", "Remit19b_specify",
+  "Remit23", "Remit23_label", "Remit24", "Remit24_specify", "Remit24_label",
+  "Remit26", "Remit27"
+)
+
+df_ZAM_clean_repeat3$remittance_recipient_roster <- df_ZAM_raw_flat_merged_2$remittance_recipient_roster %>%
+  select(any_of(keep_vars_remittance_recipient_roster))
+```
+
+
+```{r}
+df_ZAM_clean_repeat3$remittance_recipient_roster <- df_ZAM_clean_repeat3$remittance_recipient_roster %>%
+  arrange(`_uuid`, `_index`) %>%
+  group_by(`_uuid`) %>%
+  mutate(count = row_number()) %>%
+  ungroup() %>%
+  select(-`_index`) %>%
+  pivot_wider(
+    id_cols = c(`_uuid`, source, `_parent_index`, `_parent_table_name`, Intro_06),
+    names_from = count,
+    values_from = c(
+      "current_recipient", "Remit18a", "Remit18a_specify", "Remit18b",
+      "Remit19a", "Remit19a_specify", "Remit19b", "Remit19b_specify",
+      "Remit23", "Remit23_label", "Remit24", "Remit24_specify", "Remit24_label",
+      "Remit26", "Remit27"
+    ),
+    names_sep = ""
+  )
+
+```
+
+
+####7. Social Protection - "ScProtec02_group  " 
+After social_protection_intro2
+
+```{r}
+keep_vars_ScProtec02_group <- c(
+  "source", "_index", "_parent_index", "_parent_table_name", "_uuid", "Intro_06", "ScProtec02",
+  "ScProtec02_label"
+)
+
+df_ZAM_clean_repeat3$ScProtec02_group <- df_ZAM_raw_flat_merged_2$ScProtec02_group %>%
+  select(any_of(keep_vars_ScProtec02_group))
+```
+
+```{r}
+df_ZAM_clean_repeat3$ScProtec02_group <- df_ZAM_clean_repeat3$ScProtec02_group %>%
+  arrange(`_uuid`, `_index`) %>%
+  group_by(`_uuid`) %>%
+  mutate(count = row_number()) %>%
+  ungroup() %>%
+  select(-`_index`) %>%
+  pivot_wider(
+    id_cols = c(`_uuid`, source, `_parent_index`, `_parent_table_name`, Intro_06),
+    names_from = count,
+    values_from = c(ScProtec02, ScProtec02_label),
+    names_sep = ""
+  )
+
+```
+
+```{r}
+cols_scprotec <- colnames(df_ZAM_clean_repeat3$ScProtec02_group)
+
+# Identify columns matching pattern
+scprotec_vars <- grep("^ScProtec02\\d+$", cols_scprotec, value = TRUE)
+
+# Filter scprotec_vars to only those actually present in dataframe
+scprotec_vars <- intersect(scprotec_vars, cols_scprotec)
+
+repeat_nums <- as.integer(stringr::str_extract(scprotec_vars, "\\d+$"))
+
+rename_map <- setNames(
+  scprotec_vars,  # old column names (keys)
+  paste0("Programme", repeat_nums, "_ScProtec02")  # new column names (values)
+)
+
+df_ZAM_clean_repeat3$ScProtec02_group <- df_ZAM_clean_repeat3$ScProtec02_group %>%
+  rename(!!!rename_map)
+
+```
+
+####8. Social Protection - "programme_group " 
+After count_ScProtec02
+```{r}
+keep_vars_programme_group <- c(
+  "source", "_index", "_parent_index", "_parent_table_name", "_uuid", "Intro_06",
+  "current_programme_label", "ScProtec03", "ScProtec03_specify", "ScProtec03b",
+  "ScProtec04", "ScProtec04_other", "ScProtec05", "ScProtec06", "ScProtec07", "ScProtec08",
+  "ScProtec09", "ScProtec09_label", "noteScProtec10", "ScProtec10", "ScProtec10Unit",
+  "food_prog_calculate"
+)
+
+df_ZAM_clean_repeat3$programme_group <- df_ZAM_raw_flat_merged_2$programme_group %>%
+  select(any_of(keep_vars_programme_group))
+```
+
+```{r}
+df_ZAM_clean_repeat3$programme_group <- df_ZAM_clean_repeat3$programme_group %>%
+  arrange(`_uuid`, `_index`) %>%
+  group_by(`_uuid`) %>%
+  mutate(count = row_number()) %>%
+  ungroup() %>%
+  select(-`_index`) %>%
+  pivot_wider(
+    id_cols = c(`_uuid`, source, `_parent_index`, `_parent_table_name`, Intro_06),
+    names_from = count,
+    values_from = c(
+      "current_programme_label",  "ScProtec03", "ScProtec03_specify", "ScProtec03b",
+      "ScProtec04", "ScProtec04_other", "ScProtec05", "ScProtec06", "ScProtec07", "ScProtec08",
+      "ScProtec09", "ScProtec09_label",  "noteScProtec10", "ScProtec10", "ScProtec10Unit",
+      "food_prog_calculate"
+    ),
+    names_sep = ""
+  )
+
+```
+
+####9. Social Protection - "ScProtec13_group" 
+After ScProtec12
+
+```{r}
+keep_vars_ScProtec13_group <- c(
+  "source", "_index", "_parent_index", "_parent_table_name", "_uuid", "Intro_06",
+  "ScProtec13"
+)
+
+df_ZAM_clean_repeat3$ScProtec13_group <- df_ZAM_raw_flat_merged_2$ScProtec13_group %>%
+  select(any_of(keep_vars_ScProtec13_group))
+```
+
+```{r}
+
+df_ZAM_clean_repeat3$ScProtec13_group <- df_ZAM_clean_repeat3$ScProtec13_group %>%
+  arrange(`_uuid`, `_index`) %>%
+  group_by(`_uuid`) %>%
+  mutate(count = row_number()) %>%
+  ungroup() %>%
+  select(-`_index`) %>%
+  pivot_wider(
+    id_cols = c(`_uuid`, source, `_parent_index`, `_parent_table_name`, Intro_06),
+    names_from = count,
+    values_from = "ScProtec13",
+    names_prefix = "ScProtec13_"
+  )
+```
+
+####10. Social Protection - "ScProtec14_group " 
+After countScProtec13
+
+```{r}
+keep_vars_ScProtec14_group <- c(
+  "source", "_index", "_parent_index", "_parent_table_name", "_uuid", "Intro_06",
+  "ScProtec14", "ScProtec14_specify"
+)
+
+df_ZAM_clean_repeat3$ScProtec14_group <- df_ZAM_raw_flat_merged_2$ScProtec14_group %>%
+  select(any_of(keep_vars_ScProtec14_group))
+```
+
+```{r}
+df_ZAM_clean_repeat3$ScProtec14_group <- df_ZAM_clean_repeat3$ScProtec14_group %>%
+  arrange(`_uuid`, `_index`) %>%
+  group_by(`_uuid`) %>%
+  mutate(count = row_number()) %>%
+  ungroup() %>%
+  select(-`_index`) %>%
+  pivot_wider(
+    id_cols = c(`_uuid`, source, `_parent_index`, `_parent_table_name`, Intro_06),
+    names_from = count,
+    values_from = c("ScProtec14", "ScProtec14_specify"),
+    names_sep = "_"
+  )
+
+```
+
+
+####11. Land and Property - "plot_name" 
+After plot_roster_intro
+```{r}
+keep_vars_plot_name <- c(
+  "source", "_index", "_parent_index", "_parent_table_name", "_uuid", "Intro_06",
+  "plot_names"
+)
+
+df_ZAM_clean_repeat3$plot_name <- df_ZAM_raw_flat_merged_2$plot_name %>%
+  select(any_of(keep_vars_plot_name))
+```
+
+```{r}
+df_ZAM_clean_repeat3$plot_name <- df_ZAM_clean_repeat3$plot_name %>%
+  arrange(`_uuid`, `_index`) %>%
+  group_by(`_uuid`) %>%
+  mutate(count = row_number()) %>%
+  ungroup() %>%
+  select(-`_index`) %>%
+  pivot_wider(
+    id_cols = c(`_uuid`, source, `_parent_index`, `_parent_table_name`, Intro_06),
+    names_from = count,
+    values_from = plot_names,
+    names_glue = "plot_names_{count}"
+  )
+
+```
+
+####12. Land and Property - "crop_roster" 
+
+```{r}
+keep_vars_crop_roster <- c(
+  "source", "_index", "_parent_index", "_parent_table_name", "_uuid", "Intro_06",
+  "currentcrop", "Land16_s1","Land17_s1"
+)
+
+df_ZAM_clean_repeat3$crop_roster <- df_ZAM_raw_flat_merged_2$crop_roster %>%
+  select(any_of(keep_vars_crop_roster))
+```
+
+
+Pivot wider to get one row per current plot, all crops per plot in one row. 
+```{r}
+df_ZAM_clean_repeat3$crop_roster <- df_ZAM_clean_repeat3$crop_roster %>%
+  arrange(source, `_parent_index`) %>%
+  group_by(source, `_parent_index`) %>%
+  mutate(crop_num = row_number()) %>%
+  ungroup() %>%
+  select(source, `_parent_index`, `_uuid`, `_parent_table_name`, Intro_06,
+         crop_num, currentcrop, Land16_s1, Land17_s1) %>%
+  pivot_wider(
+    id_cols = c(source, `_parent_index`, `_uuid`, `_parent_table_name`, Intro_06),
+    names_from = crop_num,
+    values_from = c(currentcrop, Land16_s1, Land17_s1),
+    names_glue = "{.value}{crop_num}"
+  )
+
+```
+
+####13. Land and Property - "plot_roster_info" 
+After Land04b
+```{r}
+keep_vars_plot_roster_info <- c(
+  "source", "_index", "_parent_index", "_parent_table_name", "_uuid", "Intro_06",
+  "currentplot", "Land19a", "Land19b", "Land19b_specify", "Land05", "Land06", "Land06_specify", "Land07",
+  "Land08", "Land08_specify", "userights_or_ownership", "userights_or_ownership_french",
+  "Land_10_bemba", "Land_10_nyanja", "Land_10_swahili", "Land10",
+  "Land_11_bemba", "Land_11_nyanja", "Land_11_swahili", "Land11",
+  "Land12a", "Land12a_specify", "calculate_12a",
+  "Land12b_groupnote", "Land12b_A", "Land12b_B", "Land12b_C", "Land12b_D", "Land12b_E", "Land12b_F",
+  "Land12b_G", "Land12b_H", "Land12b_I", "Land12b_J", "Land12b_K", "Land12b_OT",
+  "Land13", "Land14", "Land15",
+  "Land09", "Land09_specify",
+  "Land28", "Land28_specify", "Land28a", "Land28a_1", "Land28a_2", "Land28a_3", "Land28b",
+  "Land27", "Land27a", "Land27b_s1", "Land27b_s1_specify",
+  "Land27c_s1", "Land27c_s1_specify", "Land27d_s1", "Land27e_s1", "Land27e_s1_specify",
+  "Land09a_s1", "Land09a_s1_specify",
+  "Land29_s1", "Land29_s1_specify", "Land29b_s1", "Land29ba_s1", "Land29ba_s1_specify",
+  "Land29a_s1", "Land29a_s1_specify",
+  "count_crops",
+  "Land29aa_s1", "Land29ab_s1", "Land29ab_s1_specify"
+)
+
+df_ZAM_clean_repeat3$plot_roster_info <- df_ZAM_raw_flat_merged_2$plot_roster_info %>%
+  select(any_of(keep_vars_plot_roster_info))
+
+```
+
+
+```{r}
+#Merge crop roster with plot roster info. 
+library(dplyr)
+
+crop_df <- df_ZAM_clean_repeat3$crop_roster %>%
+  rename(plot_index = `_parent_index`) %>%
+  select( -Intro_06)  # drop as requested
+
+plot_df <- df_ZAM_clean_repeat3$plot_roster_info %>%
+  rename(plot_index = `_index`)
+
+merged_df <- plot_df %>%
+  left_join(
+    crop_df,
+    by = c("source", "plot_index", "_uuid")
+  )
+
+# If you want to relocate crop roster columns after count_crops:
+crop_cols <- setdiff(names(crop_df), c("source", "plot_index", "_uuid"))
+existing_cols <- intersect(crop_cols, names(merged_df))
+
+merged_df <- merged_df %>%
+  relocate(all_of(existing_cols), .after = count_crops)
+
+df_ZAM_clean_repeat3$plot_roster_info <- merged_df
+```
+
+```{r}
+library(dplyr)
+library(tidyr)
+
+plot_df <- df_ZAM_clean_repeat3$plot_roster_info %>%
+  select(-c(`_parent_table_name.x`, `_parent_table_name.y`, Intro_06))
+
+plot_df <- plot_df %>%
+  arrange(`_uuid`, plot_index) %>%
+  group_by(`_uuid`) %>%
+  mutate(plot_num = row_number()) %>%
+  ungroup()
+
+plot_wide <- plot_df %>%
+  pivot_wider(
+    id_cols = c("source", "_uuid"),
+    names_from = plot_num,
+    values_from = setdiff(names(plot_df), c("source", "_uuid", "plot_index", "_parent_index", "plot_num")),
+    names_glue = "Plot{plot_num}_{.value}"
+  )
+
+
+plot_counts <- plot_df %>%
+  group_by(`_uuid`) %>%
+  summarise(n_plots = n(), .groups = "drop")
+
+plot_wide <- plot_wide %>%
+  left_join(plot_counts, by = "_uuid")
+
+df_ZAM_clean_repeat3$plot_roster_info <- plot_wide
+```
+
+
+####14. Objective Wellbeing - "repeat_IncSource2" 
+
+After IncSource2
+
+```{r}
+keep_vars_repeat_IncSource2 <- c(
+  "source", "_index", "_parent_index", "_parent_table_name", "_uuid", "Intro_06",
+  "current_IncSource", "IncSource2a"
+)
+
+df_ZAM_clean_repeat3$repeat_IncSource2 <- df_ZAM_raw_flat_merged_2$repeat_IncSource2 %>%
+  select(any_of(keep_vars_repeat_IncSource2))
+```
+
+```{r}
+df_ZAM_clean_repeat3$repeat_IncSource2 <- df_ZAM_clean_repeat3$repeat_IncSource2 %>%
+  arrange(`_uuid`, `_index`) %>%
+  group_by(`_uuid`) %>%
+  mutate(count = row_number()) %>%
+  ungroup() %>%
+  select(-`_index`) %>%
+  pivot_wider(
+    id_cols = c(`_uuid`, source, `_parent_index`, `_parent_table_name`, Intro_06),
+    names_from = count,
+    values_from = c(current_IncSource, IncSource2a),
+    names_glue = "{.value}_{count}"
+  )
+
+```
+
+```{r}
+cols <- colnames(df_ZAM_clean_repeat3$repeat_IncSource2)
+
+# Extract suffixes for current_IncSource and IncSource2a
+suffixes_current <- as.integer(stringr::str_extract(grep("^current_IncSource_\\d+$", cols, value=TRUE), "\\d+$"))
+suffixes_IncSource2a <- as.integer(stringr::str_extract(grep("^IncSource2a_\\d+$", cols, value=TRUE), "\\d+$"))
+
+# Rename maps
+rename_map_current <- setNames(
+  object = grep("^current_IncSource_\\d+$", cols, value=TRUE),
+  nm = paste0("Source", suffixes_current, "_IncSource1")
+)
+
+rename_map_IncSource2a <- setNames(
+  object = grep("^IncSource2a_\\d+$", cols, value=TRUE),
+  nm = paste0("Source", suffixes_IncSource2a, "_IncSource2a")
+)
+
+rename_map <- c(rename_map_current, rename_map_IncSource2a)
+
+df_ZAM_clean_repeat3$repeat_IncSource2 <- df_ZAM_clean_repeat3$repeat_IncSource2 %>%
+  rename(!!!rename_map)
+
+```
+
+####15. Education 2  - "rptEduc16_17" 
+
+```{r}
+keep_vars_rptEduc16_17 <- c(
+  "source", "_index", "_parent_index", "_parent_table_name", "_uuid", "Intro_06",
+  "noteEduc16_17", "calcPos", "noteTraining", "EducR16", "EducR16_other",
+  "EducR17", "EducR17_other"
+)
+
+df_ZAM_clean_repeat3$rptEduc16_17 <- df_ZAM_raw_flat_merged_2$rptEduc16_17 %>%
+  select(any_of(keep_vars_rptEduc16_17))
+```
+
+```{r}
+df_ZAM_clean_repeat3$rptEduc16_17 <- df_ZAM_raw_flat_merged_2$rptEduc16_17 %>%
+  arrange(`_uuid`, `_index`) %>%
+  group_by(`_uuid`) %>%
+  mutate(count = row_number()) %>%
+  ungroup() %>%
+  select(-`_index`) %>%
+  pivot_wider(
+    id_cols = c(`_uuid`, source, `_parent_index`, `_parent_table_name`, Intro_06),
+    names_from = count,
+    values_from = c("noteEduc16_17", "calcPos", "noteTraining", "EducR16", "EducR16_other",
+                    "EducR17", "EducR17_other"),
+    names_glue = "{.value}_{count}"
+  )
+```
+
+```{r}
+cols <- colnames(df_ZAM_clean_repeat3$rptEduc16_17)
+
+# Select only EducR16 and EducR16_other columns with suffix numbers
+educ16_cols <- grep("^EducR16(_other)?_\\d+$", cols, value = TRUE)
+
+# Extract suffix number
+suffix_nums <- as.integer(stringr::str_extract(educ16_cols, "\\d+$"))
+
+# Build rename map to Stata style: TrProg{n}_EducR16[_other]
+rename_map <- setNames(
+  object = educ16_cols, # old names (existing columns)
+  nm = paste0("TrProg", suffix_nums, "_", ifelse(grepl("other", educ16_cols), "EducR16_other", "EducR16")) # new names
+)
+
+# Apply rename with corrected mapping order
+df_ZAM_clean_repeat3$rptEduc16_17 <- df_ZAM_clean_repeat3$rptEduc16_17 %>%
+  rename(!!!rename_map)
+
+
+```
+
+####16. Livestock  - "Livestock_repeat" 
+
+After Livestock_ms
+```{r}
+keep_vars_Livestock_repeat <- c(
+  "source", "_index", "_parent_index", "_parent_table_name", "_uuid", "Intro_06",
+  "Assets04", "Livestock02", "Livestock03", "Livestock04", "Livestock05", "Livestock06",
+  "Livestock07", "Livestock08", "Livestock08_calc", "Livestock09", "Livestock11",
+  "Livestock12", "Livestock12_calc", "Livestock13", "Livestock14", "Livestock_label", "Livestock_type_repeat"
+)
+
+df_ZAM_clean_repeat3$Livestock_repeat <- df_ZAM_raw_flat_merged_2$Livestock_repeat %>%
+  select(any_of(keep_vars_Livestock_repeat))
+```
+
+```{r}
+df_ZAM_clean_repeat3$Livestock_repeat <- df_ZAM_clean_repeat3$Livestock_repeat %>%
+  arrange(`_uuid`, `_index`) %>%
+  group_by(`_uuid`) %>%
+  mutate(count = row_number()) %>%
+  ungroup() %>%
+  select(-`_index`) %>%
+  pivot_wider(
+    id_cols = c(`_uuid`, source, `_parent_index`, `_parent_table_name`, Intro_06),
+    names_from = count,
+    values_from = c(
+      "Assets04", "Livestock02", "Livestock03", "Livestock04", "Livestock05", "Livestock06",
+      "Livestock07", "Livestock08", "Livestock08_calc", "Livestock09", "Livestock11",
+      "Livestock12", "Livestock12_calc", "Livestock13", "Livestock14","Livestock_label", "Livestock_type_repeat"
+    ),
+    names_sep = ""
+  )
+```
+
+####17. Livestock  - "Byproduct_repeat" 
+After Byproduct_ms
+
+```{r}
+keep_vars_Byproduct_repeat <- c(
+  "source", "_index", "_parent_index", "_parent_table_name", "_uuid", "Intro_06",
+  "Byproduct_label", "Byproduct_type_repeat", "Livestock16", "Livestock17", "Livestock17_calc",
+  "Livestock18", "Livestock19", "Livestock20", "Livestock20_calc", "Livestock21"
+)
+
+df_ZAM_clean_repeat3$Byproduct_repeat <- df_ZAM_raw_flat_merged_2$Byproduct_repeat %>%
+  select(any_of(keep_vars_Byproduct_repeat))
+```
+
+```{r}
+df_ZAM_clean_repeat3$Byproduct_repeat <- df_ZAM_clean_repeat3$Byproduct_repeat %>%
+  arrange(`_uuid`, `_index`) %>%
+  group_by(`_uuid`) %>%
+  mutate(count = row_number()) %>%
+  ungroup() %>%
+  select(-`_index`) %>%
+  pivot_wider(
+    id_cols = c(`_uuid`, source, `_parent_index`, `_parent_table_name`, Intro_06),
+    names_from = count,
+    values_from = c(
+      "Byproduct_label", "Byproduct_type_repeat", "Livestock16", "Livestock17", "Livestock17_calc",
+      "Livestock18", "Livestock19", "Livestock20", "Livestock20_calc", "Livestock21"
+    ),
+    names_sep = ""
+  )
+```
+
+####18. Sample ID - "Intro_06a_repeat"
+After Intro_06a
+
+```{r}
+keep_vars_Intro_06a_repeat <- c(
+  "source", "_index", "_parent_index", "_parent_table_name", "_uuid", "Intro_06",
+  "Intro_06b", "Intro_06b_HH"
+)
+
+df_ZAM_clean_repeat3$Intro_06a_repeat <- df_ZAM_raw_flat_merged_2$Intro_06a_repeat %>%
+  select(any_of(keep_vars_Intro_06a_repeat))
+```
+
+```{r}
+df_ZAM_clean_repeat3$Intro_06a_repeat <- df_ZAM_clean_repeat3$Intro_06a_repeat %>%
+  arrange(`_uuid`, `_index`) %>%
+  group_by(`_uuid`) %>%
+  mutate(count = row_number()) %>%
+  ungroup() %>%
+  select(-`_index`) %>%
+  pivot_wider(
+    id_cols = c(`_uuid`, source, `_parent_index`, `_parent_table_name`, Intro_06),
+    names_from = count,
+    values_from = c(
+      "Intro_06b", "Intro_06b_HH"
+    ),
+    names_sep = ""
+  )
+```
+
+
+```{r}
+tables_to_add <- c(
+  "hhroster", "HHmemberInfo", "identification_questions_repeat", "rosterPart2",
+  "Education", "lang", "dis_remembering", "dis_self_care", "dis_communicating",
+  "dis_seeing", "dis_hearing", "dis_walking", "gp_migrant", "main"
+)
+
+for (tbl in tables_to_add) {
+  df_ZAM_clean_repeat3[[tbl]] <- df_ZAM_raw_flat_merged_2[[tbl]]
+}
+
+```
+
+**SAVE THE DATASET - DO NOT PUSH TO GIT**
+```{r}
+saveRDS(df_ZAM_clean_repeat3, "df_ZAM_clean_repeat_HH_3.rds")
+```
+

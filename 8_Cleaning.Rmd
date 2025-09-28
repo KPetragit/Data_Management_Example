@@ -1,0 +1,1453 @@
+---
+title: "8_Cleaning"
+author: "Global Survey Team/Petra Kaps"
+date: "2025-06-25"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+
+## Load packages
+if (!requireNamespace("pacman", quietly = TRUE)) {
+install.packages("pacman")
+}
+
+pacman::p_load(readxl, purrr, scales, lubridate, haven, labelled, shiny, shinydashboard,
+               shinyWidgets, shinyauthr, shinyjs, tidyverse, fusen, plotly,
+               unhcrthemes, ggforce, ggridges, DT, bslib, readr, writexl, pins, sparkline, 
+               leaflet, shinyBS, mapboxer, zscorer, rlang, nipnTK, rsconnect, dm, robotoolbox,
+               Microsoft365R,expss)
+```
+
+```{r}
+# Merge function that handles both cases
+merge_corrections_combined <- function(df, corrections_df) {
+  # Check if required columns exist
+  if (!"_uuid" %in% names(df)) {
+    message("Original dataframe is missing '_uuid' column. Skipping merge.")
+    return(df)
+  }
+  
+  if (!"_uuid" %in% names(corrections_df)) {
+    message("Corrections dataframe is missing '_uuid' column. Skipping merge.")
+    return(df)
+  }
+  
+  # Ensure '_uuid' columns are the same type (convert to character)
+  corrections_df <- corrections_df %>%
+    mutate(`_uuid` = as.character(`_uuid`))
+  
+  df <- df %>%
+    mutate(`_uuid` = as.character(`_uuid`))
+  
+  # Handle _index column which was added during data collection (therefore NA for early submissions) - convert to character if it exists, otherwise create as NA
+  if ("_index" %in% names(corrections_df)) {
+    corrections_df <- corrections_df %>%
+      mutate(`_index` = as.character(`_index`))
+  } else {
+    corrections_df$`_index` <- NA_character_
+  }
+  
+  if ("_index" %in% names(df)) {
+    df <- df %>%
+      mutate(`_index` = as.character(`_index`))
+  } else {
+    df$`_index` <- NA_character_
+  }
+
+  # Split corrections into those with and without valid _index
+  corrections_with_index <- corrections_df %>%
+    filter(!is.na(`_index`))
+  
+  corrections_without_index <- corrections_df %>%
+    filter(is.na(`_index`))
+  
+  merged_df <- df
+  
+  # First merge: corrections with valid _index (merge on both _uuid and _index)
+  if (nrow(corrections_with_index) > 0) {
+    message(paste("Merging", nrow(corrections_with_index), "corrections on both _uuid and _index"))
+    merged_df <- merged_df %>%
+      left_join(corrections_with_index, by = c("_uuid", "_index"), suffix = c("", "_corr"))
+  }
+  
+  # Second merge: corrections without _index (merge on _uuid only)
+  # Only merge rows that haven't been updated yet
+  if (nrow(corrections_without_index) > 0) {
+    message(paste("Merging", nrow(corrections_without_index), "corrections on _uuid only"))
+    
+    # Find which rows haven't been updated yet (no _corr columns or all _corr columns are NA)
+    corr_cols <- names(merged_df)[grepl("_corr$", names(merged_df))]
+    
+    if (length(corr_cols) > 0) {
+      # Identify rows that haven't been corrected yet
+      uncorrected_mask <- merged_df %>%
+        select(all_of(corr_cols)) %>%
+        apply(1, function(x) all(is.na(x)))
+      
+      # Only merge corrections for uncorrected rows
+      temp_merge <- merged_df[uncorrected_mask, ] %>%
+        select(-all_of(corr_cols)) %>%  # Remove existing _corr columns
+        left_join(corrections_without_index, by = "_uuid", suffix = c("", "_corr"))
+      
+      # Update the merged dataframe
+      merged_df[uncorrected_mask, ] <- temp_merge
+    } else {
+      # No previous corrections, merge directly
+      merged_df <- merged_df %>%
+        left_join(corrections_without_index, by = "_uuid", suffix = c("", "_corr"))
+    }
+  }
+  
+  return(merged_df)
+}
+
+
+# Replace problematic cases (duplicates, outliers, etc.)
+columns_to_correct <- c(
+  "Intro_06",
+  "Intro_06_replace",
+  "Intro_06_sampletype",
+  "origincntry",
+  "origincountry",
+  "telHoH",
+  "BD20_min",
+  "SubPov02_month",
+  "CL02",
+  "CL09",
+  "Final_01",
+  "EMP16_2",
+  "EMP06d",
+  "EMP10_14",
+  "currentplot",
+  "HH_01b"
+)
+```
+
+
+##Step 8: Cleaning
+This script cleans the 6 datasets. 
+
+```{r}
+df_l <- readRDS("FDS_ZAM2025_toclean_8.rds")
+
+# Rename list (for comparison with original)
+df_l_c <- df_l
+```
+
+```{r}
+check_orphans <- function(child, parent, name) {
+  orphans <- anti_join(child, parent, by = "_uuid")
+  cat(name, ": ", nrow(orphans), " uuids not in main\n")
+  if (nrow(orphans) > 0) print(head(orphans$`_uuid`, 10))
+}
+check_orphans(df_l_c$HHroster,    df_l_c$main, "HHroster")
+check_orphans(df_l_c$RA_caregiver,df_l_c$main, "RA_caregiver")
+check_orphans(df_l_c$RA_adult,    df_l_c$main, "RA_adult")
+check_orphans(df_l_c$RA_woman,    df_l_c$main, "RA_woman")
+```
+
+
+```{r}
+#Sample check before cleaning 
+sample_counts_org <- df_l_c$main %>%
+  mutate(
+    prefix = case_when(
+      str_starts(Intro_06, "MYKSET") ~ "MYKSET",
+      str_starts(Intro_06, "MYKPRO") ~ "MYKPRO",
+      str_starts(Intro_06, "LUSREF") ~ "LUSREF",
+      str_starts(Intro_06, "LUSASY") ~ "LUSASY",
+      str_starts(Intro_06, "MANHST") ~ "MANHST",
+      str_starts(Intro_06, "MANSET") ~ "MANSET",
+      str_starts(Intro_06, "MEHHST") ~ "MEHHST",
+      str_starts(Intro_06, "MEHSET") ~ "MEHSET",
+      str_starts(Intro_06, "MYKHST") ~ "MYKHST",
+      TRUE ~ "OTHER"
+    )
+  ) %>%
+  count(prefix, name = "n") 
+
+sample_counts_org
+
+```
+```{r}
+check_orphans(df_l_c$HHroster,    df_l_c$main, "HHroster")
+check_orphans(df_l_c$RA_caregiver,df_l_c$main, "RA_caregiver")
+check_orphans(df_l_c$RA_adult,    df_l_c$main, "RA_adult")
+check_orphans(df_l_c$RA_woman,    df_l_c$main, "RA_woman")
+```
+
+
+```{r}
+# Manual logs
+corrections_man <- read_xlsx("QA_Zambia_MI.xlsx", sheet = "Additional corrections") |>
+  select(`_uuid`, variable, originalValue = value, correctedValue = newvalue, action)
+
+# Remove cases to be dropped
+corrections_man_del <- corrections_man |>
+  filter(action == "DROP")
+
+df_l_c <- lapply(df_l_c, function(df) {
+  df %>%
+    filter(!`_uuid` %in% corrections_man_del$`_uuid`)
+})
+
+# Replace cases to be replaced
+corrections_man_repl <- corrections_man |>
+  filter(action == "REPLACE") |>
+  unique() |>
+  group_by(`_uuid`, variable) |>
+  filter(row_number() == 1) |>
+  filter(correctedValue != "", !is.na(correctedValue)) |>
+  select(`_uuid`, variable, correctedValue) |>
+  pivot_wider(names_from = variable, values_from = correctedValue, names_prefix = "corr_") |>
+  as.data.frame()
+
+# Apply the combined merge function
+df_l_c <- lapply(df_l_c, function(df) {
+  merge_corrections_combined(df, corrections_man_repl)  
+})
+
+df_l_c <- lapply(df_l_c, function(df) {
+  for (col in columns_to_correct) {
+    corr_col <- paste0("corr_", col)
+    if (all(c(col, corr_col) %in% names(df))) {
+      df <- df %>%
+        mutate(!!sym(col) := case_when(
+          !is.na(!!sym(corr_col)) ~ !!sym(corr_col),
+          TRUE ~ as.character(!!sym(col))
+        ))
+    }
+  }
+  df
+})
+
+df_l_c <- lapply(df_l_c, function(df) {
+  # Remove correction columns after applying corrections  
+  df <- df %>%
+    select(-starts_with("corr_"), -ends_with("_corr"))
+})
+
+# For the moment I have not included "ADD" - these are so far just replacement codes, which may not be needed for analysis.
+
+# From manual cleaning extract cases that were wrongfully deleted in dashboard
+keep_uuids <- corrections_man %>%
+  filter(action %in% c("REPLACE", "ADD")) %>%
+  pull(`_uuid`)
+
+
+```
+
+```{r}
+check_orphans(df_l_c$HHroster,    df_l_c$main, "HHroster")
+check_orphans(df_l_c$RA_caregiver,df_l_c$main, "RA_caregiver")
+check_orphans(df_l_c$RA_adult,    df_l_c$main, "RA_adult")
+check_orphans(df_l_c$RA_woman,    df_l_c$main, "RA_woman")
+```
+
+
+
+```{r}
+#Import corrections logs from dashboard
+#board <- board_connect(auth = "envvar")
+#corrections <- pin_read(board, "nice@unhcr.org/FDS_ZAM_corrections")
+#anthro_corrections <- pin_read(board, "nice@unhcr.org/FDS_ZAM_corrections")
+
+corrections <- read_csv("FDS_ZAM_corrections.csv")
+#anthro_corrections <- read_csv("path/to/FDS_ZAM_anthro_corrections.csv")
+
+
+# Remove matching _uuid rows to keep from corrections
+corrections <- corrections %>%
+  filter(!`uuid` %in% keep_uuids)
+
+#Manually remove corrections - as per Gabi's request
+corrections <- corrections %>%
+  filter(!logID %in% c("301-2025-05-22-37-1", 
+                       "301-2025-04-18-21-1", 
+                       "301-2025-04-18-4-1",
+                       "301-2025-04-16-23-1",
+                       "301-2025-04-16-25-1",
+                       "301-2025-04-16-6-1",
+                       "301-2025-04-16-21-1",
+                       "301-2025-04-16-27-1",
+                       "301-2025-05-07-55-1",
+                       "301-2025-05-07-33-1",
+                       "301-2025-05-07-12-1",
+                       "301-2025-05-22-14-1",
+                       "301-2025-04-19-36-1",
+                       "301-2025-04-19-69-1",
+                       "301-2025-04-19-16-1",
+                       "301-2025-05-30-52-1",
+                       "301-2025-04-17-33-1",
+                       "301-2025-04-17-80-1",
+                       "301-2025-04-17-19-1"))
+```
+
+```{r}
+# Pivot corrections table
+corrections_p <- corrections |>
+  select(-logID, -submissionDate) |>
+  unique() |>
+  group_by(uuid, index, variable) |>
+  filter(row_number() == 1) |>
+  filter(correctedValue != "", !is.na(correctedValue)) |>
+  select(uuid, index, variable, correctedValue) |>
+  pivot_wider(names_from = variable, values_from = correctedValue, names_prefix = "corr_") |>
+  rename(`_uuid` = uuid, `_index` = index) |>
+  as.data.frame()
+
+corrections_p_index <-
+  corrections_p %>%
+  filter(!is.na(`_index`))
+
+corrections_p_no_index <-
+  corrections_p %>%
+  filter(is.na(`_index`))
+
+
+
+# Apply the combined merge function
+df_l_c <- lapply(df_l_c, function(df) {
+  merge_corrections_combined(df, corrections_p_index)  
+})
+
+# Remove cases with "delete"
+df_l_c <- lapply(df_l_c, function(df) {
+  df %>%
+    filter(!grepl("delete|drop|remove|del", corr_Intro_06, ignore.case = TRUE) | is.na(corr_Intro_06))
+})
+
+df_l_c <- lapply(df_l_c, function(df) {
+  for (col in columns_to_correct) {
+    corr_col <- paste0("corr_", col)
+    if (all(c(col, corr_col) %in% names(df))) {
+      df <- df %>%
+        mutate(!!sym(col) := case_when(
+          !is.na(!!sym(corr_col)) ~ !!sym(corr_col),
+          TRUE ~ as.character(!!sym(col))
+        ))
+    }
+  }
+  df
+})
+
+df_l_c <- lapply(df_l_c, function(df) {
+  # Remove correction columns after applying corrections  
+  df <- df %>%
+    select(-starts_with("corr_"))
+})
+
+# Apply the combined merge function no index
+df_l_c <- lapply(df_l_c, function(df) {
+  merge_corrections_combined(df, corrections_p_no_index)  
+})
+
+# Remove cases with "delete"
+df_l_c <- lapply(df_l_c, function(df) {
+  df %>%
+    filter(!grepl("delete|drop|remove|del", corr_Intro_06, ignore.case = TRUE) | is.na(corr_Intro_06))
+})
+
+df_l_c <- lapply(df_l_c, function(df) {
+  for (col in columns_to_correct) {
+    corr_col <- paste0("corr_", col)
+    if (all(c(col, corr_col) %in% names(df))) {
+      df <- df %>%
+        mutate(!!sym(col) := case_when(
+          !is.na(!!sym(corr_col)) ~ !!sym(corr_col),
+          TRUE ~ as.character(!!sym(col))
+        ))
+    }
+  }
+  df
+})
+
+df_l_c <- lapply(df_l_c, function(df) {
+  # Remove correction columns after applying corrections  
+  df <- df %>%
+    select(-starts_with("corr_"), -ends_with("_corr"))
+})
+```
+```{r}
+check_orphans(df_l_c$HHroster,    df_l_c$main, "HHroster")
+check_orphans(df_l_c$RA_caregiver,df_l_c$main, "RA_caregiver")
+check_orphans(df_l_c$RA_adult,    df_l_c$main, "RA_adult")
+check_orphans(df_l_c$RA_woman,    df_l_c$main, "RA_woman")
+```
+```{r}
+# make sure all dropped cases from main also dropped in roster
+df_l_c$HHroster <- df_l_c$HHroster |>
+  filter(`_uuid` %in% df_l_c$main$`_uuid`)
+```
+
+```{r}
+check_orphans(df_l_c$HHroster,    df_l_c$main, "HHroster")
+check_orphans(df_l_c$RA_caregiver,df_l_c$main, "RA_caregiver")
+check_orphans(df_l_c$RA_adult,    df_l_c$main, "RA_adult")
+check_orphans(df_l_c$RA_woman,    df_l_c$main, "RA_woman")
+```
+
+## Anthropometrics
+```{r corrections_anthro}
+# Import anthro corrections table
+#corrections_anthro <- pin_read(board, "nice@unhcr.org/FDS_ZAM_anthro_corrections") 
+corrections_anthro <- read_csv("FDS_ZAM_anthro_corrections.csv")|>
+  mutate(index = as.character(index)) |>
+  mutate()
+
+# Set all values to NA that are not needed for corrections
+filter_corrections_by_variable <- function(corrections_df) {
+  corrections_df |>
+    mutate(
+      # Set values to NA based on variable type
+      age_months = case_when(
+        variable %in% c("Weight and/or age", "Height and/or age") ~ age_months,
+        TRUE ~ NA_real_
+      ),
+      MUAC_cm = case_when(
+        variable == "AN10" ~ MUAC_cm,
+        TRUE ~ NA_real_
+      ),
+      weight_kg = case_when(
+        variable %in% c("Weight and/or age", "Weight and/or length") ~ weight_kg,
+        TRUE ~ NA_real_
+      ),
+      length_height_cm = case_when(
+        variable %in% c("Weight and/or length", "Height and/or age") ~ length_height_cm,
+        TRUE ~ NA_real_
+      ),
+      standing_lying = case_when(
+        variable == "AN8" ~ standing_lying,
+        TRUE ~ NA_character_
+      ),
+      oedema = case_when(
+        variable == "AN9" ~ oedema,
+        TRUE ~ NA_character_
+      )
+    )
+}
+
+corrections_anthro <- filter_corrections_by_variable(corrections_anthro)
+
+# Pivot corrections table
+
+first_non_na_or_na <- function(x) {
+  if (all(is.na(x))) NA else first(na.omit(x))
+}
+
+
+corrections_anthro_p <- corrections_anthro %>%
+  select(uuid,
+         index,
+         childnametouseAGE = age_months,
+         AN10_cm = MUAC_cm,
+         child_weight = weight_kg,
+         child_height_length = length_height_cm,
+         AN8 = standing_lying) |>
+  group_by(uuid) |>
+  summarise(
+    childnametouseAGE = first_non_na_or_na(childnametouseAGE),
+    AN10_cm = first_non_na_or_na(AN10_cm),
+    child_weight = first_non_na_or_na(child_weight),
+    child_height_length = first_non_na_or_na(child_height_length),
+    AN8 = first_non_na_or_na(AN8),
+    .groups = "drop"
+  )
+
+corrections_anthro_p <- corrections_anthro_p |>
+  rename_with(~ ifelse(.x %in% names(corrections_anthro_p)[1], .x, paste0("corr_", .x))) |> #Add corr prex except for uuid and index
+  rename(`_uuid` = uuid)
+
+columns_to_correct_anthro <- c(
+  "childnametouseAGE", 
+  "AN10_cm", 
+  "child_weight", 
+  "child_height_length", 
+  "AN8"
+)
+
+# Define the target data types for each column
+column_types <- list(
+  "childnametouseAGE" = "integer",
+  "AN10_cm" = "numeric", 
+  "child_weight" = "numeric",
+  "child_height_length" = "numeric",
+  "AN8" = "character"
+)
+
+correct_anthro <- function(df) {
+   for (col in columns_to_correct_anthro) {
+     corr_col <- paste0("corr_", col)
+     
+     if (all(c(col, corr_col) %in% names(df))) {
+       target_type <- column_types[[col]]
+       
+       df <- df %>%
+         mutate(!!sym(col) := case_when(!is.na(!!sym(corr_col)) ~ {
+           if (target_type == "integer") {
+             as.integer(!!sym(corr_col))
+           } else if (target_type == "numeric") {
+             as.numeric(!!sym(corr_col))
+           } else if (target_type == "character") {
+             as.character(!!sym(corr_col))
+           }
+         }, TRUE ~ {
+           if (target_type == "integer") {
+             as.integer(!!sym(col))
+           } else if (target_type == "numeric") {
+             as.numeric(!!sym(col))
+           } else if (target_type == "character") {
+             as.character(!!sym(col))
+           }
+         }))
+     }
+   }
+   df
+ }
+
+df_l_c$RA_caregiver <- df_l_c$RA_caregiver |>
+  left_join(corrections_anthro_p)
+
+df_l_c$RA_caregiver <- df_l_c$RA_caregiver |> 
+  correct_anthro() |>
+  select(-starts_with("corr_"))
+
+# df_l_c$main <- df_l_c$main |>
+#   left_join(corrections_p_anthro_no_index)
+# 
+# df_l_c$main <- df_l_c$main |> 
+#   correct_anthro() |>
+#   select(-starts_with("corr_"))
+
+df_l_c <- lapply(df_l_c, function(df) {
+  # Remove correction columns after applying corrections  
+  df <- df %>%
+    select(-starts_with("corr_"), -ends_with("_corr"))
+})
+```
+
+```{r}
+check_orphans(df_l_c$HHroster,    df_l_c$main, "HHroster")
+check_orphans(df_l_c$RA_caregiver,df_l_c$main, "RA_caregiver")
+check_orphans(df_l_c$RA_adult,    df_l_c$main, "RA_adult")
+check_orphans(df_l_c$RA_woman,    df_l_c$main, "RA_woman")
+```
+
+```{r}
+#Sample check after corrections
+sample_counts_correc <- df_l_c$main %>%
+  mutate(
+    prefix = case_when(
+      str_starts(Intro_06, "MYKSET") ~ "MYKSET",
+      str_starts(Intro_06, "MYKPRO") ~ "MYKPRO",
+      str_starts(Intro_06, "LUSREF") ~ "LUSREF",
+      str_starts(Intro_06, "LUSASY") ~ "LUSASY",
+      str_starts(Intro_06, "MANHST") ~ "MANHST",
+      str_starts(Intro_06, "MANSET") ~ "MANSET",
+      str_starts(Intro_06, "MEHHST") ~ "MEHHST",
+      str_starts(Intro_06, "MEHSET") ~ "MEHSET",
+      str_starts(Intro_06, "MYKHST") ~ "MYKHST",
+      TRUE ~ "OTHER"
+    )
+  ) %>%
+  count(prefix, name = "n") 
+
+sample_counts_correc
+
+```
+
+```{r}
+FDS_ZAM2025_clean_9 <- list()
+FDS_ZAM2025_clean_9$HHroster <- df_l_c$HHroster
+FDS_ZAM2025_clean_9$main <- df_l_c$main
+FDS_ZAM2025_clean_9$RA_adult <- df_l_c$RA_adult
+FDS_ZAM2025_clean_9$RA_woman <- df_l_c$RA_woman
+FDS_ZAM2025_clean_9$RA_caregiver <- df_l_c$RA_caregiver
+#FDS_ZAM2025_clean_9$HHroster_mobilemember <- df_l_c$HHroster_mobilemember 
+```
+
+```{r}
+cat("Number of removed cases:", nrow(df_l[["main"]]) - nrow(df_l_c[["main"]]))
+
+
+columns_to_check <- c(
+  "Intro_06", "telHoH", "BD20_min", "SubPov02_month", "CL02", "CL09", "Final_01",
+  "EMP16_2", "EMP06d", "EMP10_14", "currentplot", "HH_01b", "childnametouseAGE",
+  "AN10_cm", "child_weight", "child_height_length", "AN8"
+)
+
+# Function to extract the dfs
+join_before_after <- function(df, join_vars) {
+  df_before <- df_l[[df]]
+  df_after <- df_l_c[[df]]
+  
+  # Perform join using multiple keys
+  df_joined <- inner_join(df_before, df_after, by = join_vars, suffix = c("_before", "_after"))
+  
+  # Filter columns to those present in both and in the specified list
+  available_cols <- intersect(columns_to_check, intersect(names(df_before), names(df_after)))
+  
+  # Count changes only in those columns
+  changes <- map_int(available_cols, function(col) {
+    before_col <- df_joined[[paste0(col, "_before")]]
+    after_col <- df_joined[[paste0(col, "_after")]]
+    sum(before_col != after_col, na.rm = TRUE)
+  })
+  
+  # Print summary
+  total_changes <- sum(changes)
+  cat(paste(
+    "Total changed values in", df, "(selected columns):",
+    total_changes, "\n"
+  ))
+}
+
+# Summary of changes
+join_before_after("main", "_uuid")
+join_before_after("RA_adult", "_uuid")
+join_before_after("RA_woman", "_uuid")
+join_before_after("RA_caregiver", "_uuid")
+
+#join_before_after("HHroster_mobilemember", c("_uuid", "_index"))
+
+join_before_after("HHroster", c("_uuid", "hhroster_memberID"))
+cat("Number of removed cases from main:", nrow(df_l[["main"]]) - nrow(df_l_c[["main"]]))
+```
+```{r}
+check_orphans(FDS_ZAM2025_clean_9$HHroster,    FDS_ZAM2025_clean_9$main, "HHroster")
+check_orphans(FDS_ZAM2025_clean_9$RA_adult,    FDS_ZAM2025_clean_9$main, "RA_adult")
+check_orphans(FDS_ZAM2025_clean_9$RA_woman,    FDS_ZAM2025_clean_9$main, "RA_woman")
+check_orphans(FDS_ZAM2025_clean_9$RA_caregiver,FDS_ZAM2025_clean_9$main, "RA_caregiver")
+```
+```{r}
+#Remove ASY seekers from Lusaka 
+# Step 1: identify UUIDs
+uuids_to_drop <- FDS_ZAM2025_clean_9$main %>%
+  filter(Intro_07 == "2", Intro_03a_NUTS1 == "ZM105") %>%
+  pull(`_uuid`)
+
+# Step 2: save them for later use
+dropped_uuids <- uuids_to_drop
+
+# Step 3: drop from main dataset
+before <- nrow(FDS_ZAM2025_clean_9$main)
+FDS_ZAM2025_clean_9$main <- FDS_ZAM2025_clean_9$main %>%
+  filter(!`_uuid` %in% dropped_uuids)
+message(before - nrow(FDS_ZAM2025_clean_9$main), " rows dropped from main.")
+
+
+# Step 4: note on how many were dropped
+message(length(dropped_uuids), " interviews dropped (Intro_07 = 2 and Intro_03a_NUTS1 = 'ZM105').")
+
+# Step 5: Drop from other datasets
+#HHroster 
+before <- nrow(FDS_ZAM2025_clean_9$HHroster)
+
+FDS_ZAM2025_clean_9$HHroster <- FDS_ZAM2025_clean_9$HHroster %>%
+  filter(!`_uuid` %in% dropped_uuids)
+
+message(before - nrow(FDS_ZAM2025_clean_9$HHroster), 
+        " rows dropped from HHroster.")
+
+#RA_adult
+
+before <- nrow(FDS_ZAM2025_clean_9$RA_adult)
+
+FDS_ZAM2025_clean_9$RA_adult <- FDS_ZAM2025_clean_9$RA_adult %>%
+  filter(!`_uuid` %in% dropped_uuids)
+
+message(before - nrow(FDS_ZAM2025_clean_9$RA_adult), 
+        " rows dropped from RA_adult.")
+
+# RA_woman
+before <- nrow(FDS_ZAM2025_clean_9$RA_woman)
+FDS_ZAM2025_clean_9$RA_woman <- FDS_ZAM2025_clean_9$RA_woman %>%
+  filter(!`_uuid` %in% dropped_uuids)
+message(before - nrow(FDS_ZAM2025_clean_9$RA_woman), 
+        " rows dropped from RA_woman.")
+
+# RA_caregiver
+before <- nrow(FDS_ZAM2025_clean_9$RA_caregiver)
+FDS_ZAM2025_clean_9$RA_caregiver <- FDS_ZAM2025_clean_9$RA_caregiver %>%
+  filter(!`_uuid` %in% dropped_uuids)
+message(before - nrow(FDS_ZAM2025_clean_9$RA_caregiver), 
+        " rows dropped from RA_caregiver.")
+
+
+
+```
+```{r}
+check_orphans(FDS_ZAM2025_clean_9$HHroster,    FDS_ZAM2025_clean_9$main, "HHroster")
+check_orphans(FDS_ZAM2025_clean_9$RA_adult,    FDS_ZAM2025_clean_9$main, "RA_adult")
+check_orphans(FDS_ZAM2025_clean_9$RA_woman,    FDS_ZAM2025_clean_9$main, "RA_woman")
+check_orphans(FDS_ZAM2025_clean_9$RA_caregiver,FDS_ZAM2025_clean_9$main, "RA_caregiver")
+```
+
+```{r}
+#Drop all non complete interviews
+# Step 1: find UUIDs to drop (Final_01 not 1 or 2)
+# uuids_to_drop_Final01 <- FDS_ZAM2025_clean_9$main %>%
+#   dplyr::filter(!(Final_01 %in% c("1","2"))) %>%
+#   dplyr::pull(`_uuid`)
+# 
+# # Step 2: save them for later use
+# dropped_uuids_Final01 <- uuids_to_drop_Final01
+# 
+# # Step 3: drop from main dataset
+# FDS_ZAM2025_clean_9$main <- FDS_ZAM2025_clean_9$main %>%
+#   dplyr::filter(!`_uuid` %in% dropped_uuids_Final01)
+# 
+# # Step 4: note on how many were dropped
+# message(length(dropped_uuids_Final01), " interviews dropped (Final_01 not in {1,2}).")
+
+```
+
+```{r}
+#Check sompleteness on complete interview variable 
+# 1. restrict key_vars per dataset
+source("params.R")
+main_keys      <- intersect(params$key_vars, names(FDS_ZAM2025_clean_9$main))
+ra_adult_keys  <- intersect(params$key_vars, names(FDS_ZAM2025_clean_9$RA_adult))
+hhroster_keys  <- intersect(params$key_vars, names(FDS_ZAM2025_clean_9$HHroster))
+
+# 2. calculate missingness in main
+main_missing <- FDS_ZAM2025_clean_9$main %>%
+  select(`_uuid`, all_of(main_keys)) %>%
+  mutate(nmissing_main = rowSums(is.na(across(all_of(main_keys))))) %>%
+  select(`_uuid`, nmissing_main)
+
+# 3. calculate missingness in RA_adult (collapse per _uuid)
+ra_missing <- FDS_ZAM2025_clean_9$RA_adult %>%
+  select(`_uuid`, all_of(ra_adult_keys)) %>%
+  mutate(row_missing = rowSums(is.na(across(all_of(ra_adult_keys))))) %>%
+  group_by(`_uuid`) %>%
+  summarise(nmissing_ra = sum(row_missing), .groups = "drop")
+
+# 4. calculate missingness in HHroster (collapse per _uuid)
+hh_missing <- FDS_ZAM2025_clean_9$HHroster %>%
+  select(`_uuid`, all_of(hhroster_keys)) %>%
+  mutate(row_missing = rowSums(is.na(across(all_of(hhroster_keys))))) %>%
+  group_by(`_uuid`) %>%
+  summarise(nmissing_hh = sum(row_missing), .groups = "drop")
+
+# 5. merge all and assign completeness
+FDS_ZAM2025_clean_9$main <- FDS_ZAM2025_clean_9$main %>%
+  left_join(main_missing, by = "_uuid") %>%
+  left_join(ra_missing,   by = "_uuid") %>%
+  left_join(hh_missing,   by = "_uuid") %>%
+  mutate(
+    nmissing_key_vars = coalesce(nmissing_main, 0) +
+                        coalesce(nmissing_ra, 0) +
+                        coalesce(nmissing_hh, 0),
+    complete_interview = if_else(nmissing_key_vars < 4, 1, 0)
+  )
+
+```
+
+```{r}
+# Step 1: find UUIDs to drop (not complete interviews)
+uuids_to_drop_incomplete <- FDS_ZAM2025_clean_9$main %>%
+  filter(complete_interview == 0) %>%
+  pull(`_uuid`)
+
+# Step 2: save them for later use
+dropped_uuids_incomplete <- uuids_to_drop_incomplete
+
+# Step 3: drop from main dataset
+FDS_ZAM2025_clean_9$main <- FDS_ZAM2025_clean_9$main %>%
+  filter(!`_uuid` %in% dropped_uuids_incomplete)
+
+# Step 4: note on how many were dropped
+message(length(dropped_uuids_incomplete), " interviews dropped (incomplete).")
+
+
+```
+```{r}
+check_orphans(FDS_ZAM2025_clean_9$HHroster,    FDS_ZAM2025_clean_9$main, "HHroster")
+check_orphans(FDS_ZAM2025_clean_9$RA_adult,    FDS_ZAM2025_clean_9$main, "RA_adult")
+check_orphans(FDS_ZAM2025_clean_9$RA_woman,    FDS_ZAM2025_clean_9$main, "RA_woman")
+check_orphans(FDS_ZAM2025_clean_9$RA_caregiver,FDS_ZAM2025_clean_9$main, "RA_caregiver")
+```
+
+
+```{r}
+#Drop in other datasets
+#HHroster 
+before <- nrow(FDS_ZAM2025_clean_9$HHroster)
+
+FDS_ZAM2025_clean_9$HHroster <- FDS_ZAM2025_clean_9$HHroster %>%
+  filter(!`_uuid` %in% dropped_uuids_incomplete)
+
+message(before - nrow(FDS_ZAM2025_clean_9$HHroster), 
+        " rows dropped from HHroster.")
+
+#RA_adult
+
+before <- nrow(FDS_ZAM2025_clean_9$RA_adult)
+
+FDS_ZAM2025_clean_9$RA_adult <- FDS_ZAM2025_clean_9$RA_adult %>%
+  filter(!`_uuid` %in% dropped_uuids_incomplete)
+
+message(before - nrow(FDS_ZAM2025_clean_9$RA_adult), 
+        " rows dropped from RA_adult.")
+
+# RA_woman
+before <- nrow(FDS_ZAM2025_clean_9$RA_woman)
+FDS_ZAM2025_clean_9$RA_woman <- FDS_ZAM2025_clean_9$RA_woman %>%
+  filter(!`_uuid` %in% dropped_uuids_incomplete)
+message(before - nrow(FDS_ZAM2025_clean_9$RA_woman), 
+        " rows dropped from RA_woman.")
+
+# RA_caregiver
+before <- nrow(FDS_ZAM2025_clean_9$RA_caregiver)
+FDS_ZAM2025_clean_9$RA_caregiver <- FDS_ZAM2025_clean_9$RA_caregiver %>%
+  filter(!`_uuid` %in% dropped_uuids_incomplete)
+message(before - nrow(FDS_ZAM2025_clean_9$RA_caregiver), 
+        " rows dropped from RA_caregiver.")
+```
+
+```{r}
+check_orphans(FDS_ZAM2025_clean_9$HHroster,    FDS_ZAM2025_clean_9$main, "HHroster")
+check_orphans(FDS_ZAM2025_clean_9$RA_adult,    FDS_ZAM2025_clean_9$main, "RA_adult")
+check_orphans(FDS_ZAM2025_clean_9$RA_woman,    FDS_ZAM2025_clean_9$main, "RA_woman")
+check_orphans(FDS_ZAM2025_clean_9$RA_caregiver,FDS_ZAM2025_clean_9$main, "RA_caregiver")
+```
+
+
+
+```{r}
+#Sample check after drop of incomplete
+sample_counts_dropinc <- FDS_ZAM2025_clean_9$main %>%
+  mutate(
+    prefix = case_when(
+      str_starts(Intro_06, "MYKSET") ~ "MYKSET",
+      str_starts(Intro_06, "MYKPRO") ~ "MYKPRO",
+      str_starts(Intro_06, "LUSREF") ~ "LUSREF",
+      str_starts(Intro_06, "LUSASY") ~ "LUSASY",
+      str_starts(Intro_06, "MANHST") ~ "MANHST",
+      str_starts(Intro_06, "MANSET") ~ "MANSET",
+      str_starts(Intro_06, "MEHHST") ~ "MEHHST",
+      str_starts(Intro_06, "MEHSET") ~ "MEHSET",
+      str_starts(Intro_06, "MYKHST") ~ "MYKHST",
+      TRUE ~ "OTHER"
+    )
+  ) %>%
+  count(prefix, name = "n") 
+
+sample_counts_dropinc
+
+```
+
+
+OTHER CLEANING 
+CAREGIVER
+```{r}
+#We have a case where DOB was entered wrongly and age is < 0. Weight and heigt is also missing as the avergae variables did not work. 
+RA_caregiver_age <- FDS_ZAM2025_clean_9$RA_caregiver %>%
+filter(childnametouseAGE < 0)
+
+#childnametousePOSITION = 5
+#uuid = de9b25bd-259a-4217-8e60-b31e11084f18
+
+#Find the age of the child from the roster 
+age_val <- FDS_ZAM2025_clean_9$HHroster %>%
+  filter(`_uuid` == "de9b25bd-259a-4217-8e60-b31e11084f18",
+         hhroster_memberID == 5) %>%
+  pull(monthagetouse)
+
+#Re-code 
+FDS_ZAM2025_clean_9$RA_caregiver <- FDS_ZAM2025_clean_9$RA_caregiver %>%
+  mutate(
+    childnametouseAGE = ifelse(`_uuid` == "de9b25bd-259a-4217-8e60-b31e11084f18",
+                               12,
+                               childnametouseAGE)
+  )
+
+```
+
+```{r}
+#Check on child_weight and child_height_length
+problem_cases_whl <- FDS_ZAM2025_clean_9$RA_caregiver %>%
+  filter(
+    (!is.na(AN7) & is.na(child_height_length)) |   # AN7 answered but no height
+    (!is.na(AN6) & is.na(child_weight))            # AN6 answered but no weight
+  ) %>%
+  select(
+    `_uuid`,
+    AN6, AN6b,
+    weight_above6, weight_below6_2, weight_below6_3,
+    child_weight,
+    AN7, AN7b,
+    height_above6, height_below6_2, height_below6_3,
+   child_height_length
+  )
+
+```
+```{r}
+problem_cases_whl <- problem_cases_whl %>%
+  mutate(
+    child_weight = rowMeans(
+      cbind(as.numeric(AN6), as.numeric(AN6b)),
+      na.rm = TRUE
+    ),
+    child_height_length = rowMeans(
+      cbind(as.numeric(AN7), as.numeric(AN7b)),
+      na.rm = TRUE
+    )
+  )
+
+```
+```{r}
+FDS_ZAM2025_clean_9$RA_caregiver <- FDS_ZAM2025_clean_9$RA_caregiver %>%
+  mutate(
+    child_weight = case_when(
+      `_uuid` %in% problem_cases_whl$`_uuid` ~
+        problem_cases_whl$child_weight[match(`_uuid`, problem_cases_whl$`_uuid`)],
+      TRUE ~ child_weight
+    ),
+    child_height_length = case_when(
+      `_uuid` %in% problem_cases_whl$`_uuid` ~
+        problem_cases_whl$child_height_length[match(`_uuid`, problem_cases_whl$`_uuid`)],
+      TRUE ~ child_height_length
+    )
+  )
+
+```
+
+```{r}
+#Check for remaining sample IDs
+sum(duplicated(FDS_ZAM2025_clean_9$main$Intro_06))
+dup_rows <- FDS_ZAM2025_clean_9$main %>%
+  filter(duplicated(Intro_06) | duplicated(Intro_06, fromLast = TRUE)) %>%
+  select(`_uuid`, Intro_06)
+
+```
+
+```{r}
+corrections_match <- corrections %>%
+  filter(originalValue %in% dup_rows$Intro_06)
+
+
+# Non-matches
+dup_rows_nonmatch <- dup_rows %>%
+  filter(!Intro_06 %in% corrections$originalValue)
+```
+
+```{r}
+dup_rows_match <- dup_rows %>%
+  filter(Intro_06 %in% corrections$originalValue)
+```
+
+```{r}
+library(openxlsx)
+write.xlsx(dup_rows, "dup_rows.xlsx", rowNames = FALSE)
+write.xlsx(dup_rows_nonmatch, "dup_rows_nonmatch.xlsx", rowNames = FALSE)
+write.xlsx(dup_rows_match, "dup_rows_match.xlsx", rowNames = FALSE)
+```
+
+```{r}
+#Check all MYK interviews to determine if they were done in or out of MYK 
+#1st - all interviews after the 5th of July were done out of MYK 
+FDS_ZAM2025_clean_9$main <- FDS_ZAM2025_clean_9$main %>%
+  mutate(
+    Hhmove_num = as.numeric(as.character(Hhmove)))
+    
+    
+FDS_ZAM2025_clean_9$main <- FDS_ZAM2025_clean_9$main %>%
+  mutate(
+    Hhmove_num = case_when(
+      (str_starts(Intro_06, "MYKSET") | str_starts(Intro_06, "MYKPRO")) &
+        as.Date(start) > as.Date("2025-07-05") &
+        (is.na(Hhmove_num) | Hhmove_num != 2) ~ 2,
+      TRUE ~ Hhmove_num
+    )
+  )
+
+```
+
+
+Coordinates check for MYKPRO sample, households who stated they did not move - double check if the interview took place in MYK or not and re-code if needed. 
+
+```{r}
+#Import MYK administrative boundary 
+
+library(sf)
+
+mayk_geojson <- st_read("mayukwayukwa_boundary.geojson")
+```
+```{r}
+#Check number of cases from MYKPRO sample
+myk_subset <- FDS_ZAM2025_clean_9$main %>%
+  filter(
+    (str_starts(Intro_06, "MYKSET") | str_starts(Intro_06, "MYKPRO")) &
+      as.Date(start) < as.Date("2025-07-05") &
+      !hh_type %in% c(3,4)
+  )
+
+```
+
+```{r}
+#Geo check - adding buffer of 5KM from MYK - to classify these cases as in MYK 
+# start with all rows, add empty MYK_flag
+
+library(dplyr)
+library(sf)
+
+# start with base data
+cases_classified <- myk_subset %>%
+  mutate(MYK_flag = NA_integer_)
+
+# pick UTM zone covering Western Zambia (zone 35S)
+utm_crs <- 32735  
+
+# buffer MYK boundary by 5 km
+mayk_buffer <- mayk_geojson %>%
+  st_transform(utm_crs) %>%
+  st_buffer(dist = 10000) %>%   # 5000 m = 5 km
+  st_transform(4326)
+
+
+# classify only those with geometry
+cases_with_geom <- cases_classified %>%
+  filter(!is.na(Final_04_wkt)) %>%
+  st_as_sf(wkt = "Final_04_wkt", crs = 4326) %>%
+  mutate(
+    MYK_flag = ifelse(
+      st_intersects(., mayk_buffer, sparse = FALSE),
+      1,  # inside 5 km buffer
+      2   # outside
+    )
+  ) %>%
+  st_drop_geometry()
+
+# merge back
+cases_classified$MYK_flag[!is.na(cases_classified$Final_04_wkt)] <- cases_with_geom$MYK_flag
+
+# check result
+table(cases_classified$MYK_flag, useNA = "ifany")
+
+```
+```{r}
+library(sf)
+library(ggplot2)
+
+# download Zambia boundary directly (Natural Earth source)
+zambia <- st_read("https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_10m_admin_0_countries.geojson") %>%
+  filter(ADMIN == "Zambia")
+
+# rebuild sf cases
+cases_sf <- cases_classified %>%
+  filter(!is.na(Final_04_wkt)) %>%
+  st_as_sf(wkt = "Final_04_wkt", crs = 4326)
+
+# plot
+ggplot() +
+  geom_sf(data = zambia, fill = "grey95", colour = "grey60") +
+  geom_sf(data = mayk_geojson, fill = NA, colour = "black", linewidth = 1) +
+  geom_sf(data = filter(cases_sf, MYK_flag == 1), colour = "green", size = 2, shape = 16) +
+  geom_sf(data = filter(cases_sf, MYK_flag == 2), colour = "red", size = 2, shape = 17) +
+  theme_minimal() +
+  labs(title = "Survey cases relative to Mayukwayukwa boundary",
+       subtitle = "Green = inside, Red = outside")
+
+```
+
+
+```{r}
+#Re-code Hhmove for those interview that were not done in MYK 
+
+cases_update <- cases_classified %>%
+  select(`_uuid`, MYK_flag)
+
+# join back to main
+FDS_ZAM2025_clean_9$main <- FDS_ZAM2025_clean_9$main %>%
+  left_join(cases_update, by = "_uuid") %>%
+  mutate(
+    Hhmove_num = case_when(
+      MYK_flag == 1 ~ 1,        # inside MYK buffer → IN
+      MYK_flag == 2 ~ 2,        # outside buffer → OUT
+      TRUE ~ Hhmove_num         # keep existing (including NA)
+    )
+  ) %>%
+  select(-MYK_flag)   # drop helper flag if not needed
+
+```
+
+```{r}
+check_orphans(FDS_ZAM2025_clean_9$HHroster,    FDS_ZAM2025_clean_9$main, "HHroster")
+check_orphans(FDS_ZAM2025_clean_9$RA_adult,    FDS_ZAM2025_clean_9$main, "RA_adult")
+check_orphans(FDS_ZAM2025_clean_9$RA_woman,    FDS_ZAM2025_clean_9$main, "RA_woman")
+check_orphans(FDS_ZAM2025_clean_9$RA_caregiver,FDS_ZAM2025_clean_9$main, "RA_caregiver")
+```
+
+```{r}
+#Create a stratum variable 
+library(dplyr)
+library(stringr)
+FDS_ZAM2025_clean_9$main <- FDS_ZAM2025_clean_9$main %>%
+    mutate(
+    stratum = case_when(
+      str_starts(Intro_06, "LUSREF") ~ "Lusaka Refugees",
+      
+      str_starts(Intro_06, "MEHSET") & screen_id_outcome == 1 ~ "Meheba Refugees",
+      str_starts(Intro_06, "MEHSET") & screen_id_outcome == 2 ~ "Meheba Former Refugees",
+      
+      str_starts(Intro_06, "MEHHST") ~ "Meheba Hosts",
+      
+      str_starts(Intro_06, "MANSET") ~ "Mantepala Refugees",
+      str_starts(Intro_06, "MANHST") ~ "Mantepala Hosts",
+      
+      str_starts(Intro_06, "MYKHST") ~ "Mayukwayukwa Hosts",
+      
+      str_starts(Intro_06, "MYKSET") & hh_type %in% c(3,4) ~ "Mayukwayukwa Former Refugees",
+      
+      str_starts(Intro_06, "MYKSET") & Hhmove_num == 1 ~ "Mayukwayukwa Refugees",
+      str_starts(Intro_06, "MYKPRO") & Hhmove_num == 1 ~ "Mayukwayukwa Refugees",
+      
+      str_starts(Intro_06, "MYKSET") & Hhmove_num == 2 ~ "Out-settlement refugees",
+      str_starts(Intro_06, "MYKPRO") & Hhmove_num == 2 ~ "Out-settlement refugees",
+      
+      TRUE ~ NA_character_
+    )
+  )
+
+```
+```{r}
+table(FDS_ZAM2025_clean_9$main$stratum, useNA = "ifany")
+```
+
+```{r}
+#Manually clean 5 NA cases: 
+#59598a9c-9f4b-44cc-86f6-22e63681f9c8
+#a2d28897-b8f3-4737-a5a6-8629125351b8 
+#The above two will be added to MYK SET as they were done in April 
+FDS_ZAM2025_clean_9$main <- FDS_ZAM2025_clean_9$main %>%
+  mutate(
+    Hhmove     = ifelse(`_uuid` %in% c("59598a9c-9f4b-44cc-86f6-22e63681f9c8",
+                                       "a2d28897-b8f3-4737-a5a6-8629125351b8"),
+                        "1", Hhmove),
+    Hhmove_num = ifelse(`_uuid` %in% c("59598a9c-9f4b-44cc-86f6-22e63681f9c8",
+                                       "a2d28897-b8f3-4737-a5a6-8629125351b8"),
+                        1, Hhmove_num)
+  )
+
+```
+```{r}
+#9ed63b27-effc-46af-b73a-278159d0e350 - MYKSET03944
+#From Gabi: the correct Sample ID is MYKPRO07266 and the interview was conducted in Lusaka 
+FDS_ZAM2025_clean_9$main <- FDS_ZAM2025_clean_9$main %>%
+  mutate(
+    Intro_06   = ifelse(`_uuid` == "9ed63b27-effc-46af-b73a-278159d0e350",
+                        "MYKPRO07266", Intro_06),
+    Hhmove     = ifelse(`_uuid` == "9ed63b27-effc-46af-b73a-278159d0e350",
+                        "2", Hhmove),   # keep as character like original
+    Hhmove_num = ifelse(`_uuid` == "9ed63b27-effc-46af-b73a-278159d0e350",
+                        2, Hhmove_num)  # numeric
+  )
+
+
+
+```
+```{r}
+#3c816579-0324-49b3-8a1f-0615508c707a - MYKSET01130
+#From Gabi: the correct Sample Id is MYKPRO02261 and the interview was conducted in Lusaka
+FDS_ZAM2025_clean_9$main <- FDS_ZAM2025_clean_9$main %>%
+  mutate(
+    Intro_06   = ifelse(`_uuid` == "3c816579-0324-49b3-8a1f-0615508c707a",
+                        "MYKPRO02261", Intro_06),
+    Hhmove     = ifelse(`_uuid` == "3c816579-0324-49b3-8a1f-0615508c707a",
+                        "2", Hhmove),   # character (to match original type)
+    Hhmove_num = ifelse(`_uuid` == "3c816579-0324-49b3-8a1f-0615508c707a",
+                        2, Hhmove_num)  # numeric
+  )
+
+```
+```{r}
+#3f20980f-6c6d-42dc-bb90-d98dfce23b2e	MYKSET06985 
+#From Gabi: this is a duplicate case, please delete it
+uuid_to_drop <- "3f20980f-6c6d-42dc-bb90-d98dfce23b2e"
+
+FDS_ZAM2025_clean_9 <- FDS_ZAM2025_clean_9 %>%
+  map(~ filter(.x, `_uuid` != uuid_to_drop))
+
+```
+
+```{r}
+check_orphans(FDS_ZAM2025_clean_9$HHroster,    FDS_ZAM2025_clean_9$main, "HHroster")
+check_orphans(FDS_ZAM2025_clean_9$RA_adult,    FDS_ZAM2025_clean_9$main, "RA_adult")
+check_orphans(FDS_ZAM2025_clean_9$RA_woman,    FDS_ZAM2025_clean_9$main, "RA_woman")
+check_orphans(FDS_ZAM2025_clean_9$RA_caregiver,FDS_ZAM2025_clean_9$main, "RA_caregiver")
+```
+
+
+```{r}
+#Additional duplicate cleaning
+#	dd607ba1-c2b7-4343-b332-deeb8f3f6daa - MYKSET08319 - change to MYKSET03348
+#93122cf4-f54c-4f51-b2e6-8b973269963f - MYKSET08319 
+FDS_ZAM2025_clean_9$main <- FDS_ZAM2025_clean_9$main %>%
+  mutate(Intro_06 = if_else(
+    `_uuid` == "dd607ba1-c2b7-4343-b332-deeb8f3f6daa",
+    "MYKSET03348",
+    Intro_06
+  ))
+
+#033bc04c-9959-4092-a835-8751f923986c - MYKSET07680 - change to MYKSET01272
+#88e194f6-56cf-489e-bbf8-ccc9be32b5d6 - MYKSET07680
+FDS_ZAM2025_clean_9$main <- FDS_ZAM2025_clean_9$main %>%
+  mutate(Intro_06 = if_else(
+    `_uuid` == "033bc04c-9959-4092-a835-8751f923986c",
+    "MYKSET01272",
+    Intro_06
+  ))
+
+#6604d247-068e-49da-a402-d5ba5336a9d7 - 	MYKSET06331 - change to MYKSET08052
+#abaad502-ee4a-4dca-8c7d-cfc6a9962153 - 	MYKSET06331 
+FDS_ZAM2025_clean_9$main <- FDS_ZAM2025_clean_9$main %>%
+  mutate(Intro_06 = if_else(
+    `_uuid` == "6604d247-068e-49da-a402-d5ba5336a9d7",
+    "MYKSET08052",
+    Intro_06
+  ))
+
+#7a586b23-2c0c-4e23-a518-a0ca597ba3ff - MEHSET08690
+#ed76affb-954c-4054-8fda-dfbb13632d9d - MEHSET08690 - DELETE
+FDS_ZAM2025_clean_9$main <- FDS_ZAM2025_clean_9$main %>%
+  filter(`_uuid` != "ed76affb-954c-4054-8fda-dfbb13632d9d")
+
+FDS_ZAM2025_clean_9$RA_adult <- FDS_ZAM2025_clean_9$RA_adult %>%
+  filter(`_uuid` != "ed76affb-954c-4054-8fda-dfbb13632d9d")
+
+FDS_ZAM2025_clean_9$RA_woman <- FDS_ZAM2025_clean_9$RA_woman %>%
+  filter(`_uuid` != "ed76affb-954c-4054-8fda-dfbb13632d9d")
+
+FDS_ZAM2025_clean_9$RA_caregiver <- FDS_ZAM2025_clean_9$RA_caregiver %>%
+  filter(`_uuid` != "ed76affb-954c-4054-8fda-dfbb13632d9d")
+
+FDS_ZAM2025_clean_9$HHroster <- FDS_ZAM2025_clean_9$HHroster %>%
+  filter(`_uuid` != "ed76affb-954c-4054-8fda-dfbb13632d9d")
+
+#327975c0-0da2-42da-b3df-54dc9d11c067 - MANSET03061
+#545cc7eb-0cc1-4f76-9004-0e291eb913db - MANSET03061 - DELETE
+FDS_ZAM2025_clean_9$main <- FDS_ZAM2025_clean_9$main %>%
+  filter(`_uuid` != "545cc7eb-0cc1-4f76-9004-0e291eb913db")
+
+FDS_ZAM2025_clean_9$RA_adult <- FDS_ZAM2025_clean_9$RA_adult %>%
+  filter(`_uuid` != "545cc7eb-0cc1-4f76-9004-0e291eb913db")
+
+FDS_ZAM2025_clean_9$RA_woman <- FDS_ZAM2025_clean_9$RA_woman %>%
+  filter(`_uuid` != "545cc7eb-0cc1-4f76-9004-0e291eb913db")
+
+FDS_ZAM2025_clean_9$RA_caregiver <- FDS_ZAM2025_clean_9$RA_caregiver %>%
+  filter(`_uuid` != "545cc7eb-0cc1-4f76-9004-0e291eb913db")
+
+FDS_ZAM2025_clean_9$HHroster <- FDS_ZAM2025_clean_9$HHroster %>%
+  filter(`_uuid` != "545cc7eb-0cc1-4f76-9004-0e291eb913db")
+
+#c98538de-727c-493d-960b-4eca259c6ce - MANSET02153
+#80296ade-7c3b-4e45-a362-f540db278622 - MANSET02153 - change to MANSET03262
+
+FDS_ZAM2025_clean_9$main <- FDS_ZAM2025_clean_9$main %>%
+  mutate(Intro_06 = if_else(
+    `_uuid` == "80296ade-7c3b-4e45-a362-f540db278622",
+    "MANSET03262",
+    Intro_06
+  ))
+
+
+#3b06f490-b6d8-429d-b3ec-86700aba0154 - MANSET01089
+#c435bb12-4cf8-4b6c-bde8-f64fc7110df5 - MANSET01089 - change to MANSET01115
+FDS_ZAM2025_clean_9$main <- FDS_ZAM2025_clean_9$main %>%
+  mutate(Intro_06 = if_else(
+    `_uuid` == "c435bb12-4cf8-4b6c-bde8-f64fc7110df5",
+    "MANSET01115",
+    Intro_06
+  ))
+
+#COO cleaning 
+FDS_ZAM2025_clean_9$main <- FDS_ZAM2025_clean_9$main %>%
+  mutate(
+    origincntry = case_when(
+      `_uuid` == "78bb3753-543b-42f1-aaff-295c8512fcc4" & origincntry == "LAO" ~ "COD",
+      TRUE ~ origincntry
+    )
+  )
+
+FDS_ZAM2025_clean_9$main <- FDS_ZAM2025_clean_9$main %>%
+  mutate(
+    origincntry = case_when(
+      `_uuid` == "8718b77e-9a16-4b6c-b2c9-52bcca12b773" & origincntry == "TCA" ~ "TUR",
+      TRUE ~ origincntry
+    )
+  )
+
+```
+
+```{r}
+#Re-check duplicates 
+
+#Check for remaining sample IDs
+sum(duplicated(FDS_ZAM2025_clean_9$main$Intro_06))
+
+dup_rows_afterclean <- FDS_ZAM2025_clean_9$main %>%
+  filter(duplicated(Intro_06) | duplicated(Intro_06, fromLast = TRUE)) %>%
+  select(`_uuid`, Intro_06)
+
+```
+```{r}
+check_orphans(FDS_ZAM2025_clean_9$HHroster,    FDS_ZAM2025_clean_9$main, "HHroster")
+check_orphans(FDS_ZAM2025_clean_9$RA_adult,    FDS_ZAM2025_clean_9$main, "RA_adult")
+check_orphans(FDS_ZAM2025_clean_9$RA_woman,    FDS_ZAM2025_clean_9$main, "RA_woman")
+check_orphans(FDS_ZAM2025_clean_9$RA_caregiver,FDS_ZAM2025_clean_9$main, "RA_caregiver")
+```
+
+```{r}
+FDS_ZAM2025_clean_9$main <- FDS_ZAM2025_clean_9$main %>%
+    mutate(
+    stratum = case_when(
+      str_starts(Intro_06, "LUSREF") ~ "Lusaka Refugees",
+      
+      str_starts(Intro_06, "MEHSET") & screen_id_outcome == 1 ~ "Meheba Refugees",
+      str_starts(Intro_06, "MEHSET") & screen_id_outcome == 2 ~ "Meheba Former Refugees",
+      
+      str_starts(Intro_06, "MEHHST") ~ "Meheba Hosts",
+      
+      str_starts(Intro_06, "MANSET") ~ "Mantapala Refugees",
+      str_starts(Intro_06, "MANHST") ~ "Mantapala Hosts",
+      
+      str_starts(Intro_06, "MYKHST") ~ "Mayukwayukwa Hosts",
+      
+      str_starts(Intro_06, "MYKSET") & hh_type %in% c(3,4) ~ "Mayukwayukwa Former Refugees",
+      
+      str_starts(Intro_06, "MYKSET") & Hhmove_num == 1 ~ "Mayukwayukwa Refugees",
+      str_starts(Intro_06, "MYKPRO") & Hhmove_num == 1 ~ "Mayukwayukwa Refugees",
+      
+      str_starts(Intro_06, "MYKSET") & Hhmove_num == 2 ~ "Out-settlement Refugees",
+      str_starts(Intro_06, "MYKPRO") & Hhmove_num == 2 ~ "Out-settlement Refugees",
+      
+      TRUE ~ NA_character_
+    )
+  )
+
+```
+```{r}
+table(FDS_ZAM2025_clean_9$main$stratum, useNA = "ifany")
+```
+
+```{r}
+#Sample check after final manual clean and geo check
+sample_counts_final<- FDS_ZAM2025_clean_9$main %>%
+  mutate(
+    prefix = case_when(
+      str_starts(Intro_06, "MYKSET") ~ "MYKSET",
+      str_starts(Intro_06, "MYKPRO") ~ "MYKPRO",
+      str_starts(Intro_06, "LUSREF") ~ "LUSREF",
+      str_starts(Intro_06, "LUSASY") ~ "LUSASY",
+      str_starts(Intro_06, "MANHST") ~ "MANHST",
+      str_starts(Intro_06, "MANSET") ~ "MANSET",
+      str_starts(Intro_06, "MEHHST") ~ "MEHHST",
+      str_starts(Intro_06, "MEHSET") ~ "MEHSET",
+      str_starts(Intro_06, "MYKHST") ~ "MYKHST",
+      TRUE ~ "OTHER"
+    )
+  ) %>%
+  count(prefix, name = "n") 
+
+sample_counts_final
+
+```
+
+```{r}
+#Show final table 
+library(dplyr)
+
+# rename counts
+sample_counts_org     <- sample_counts_org     %>% rename(org = n)
+sample_counts_correc  <- sample_counts_correc  %>% rename(correc = n)
+sample_counts_dropinc <- sample_counts_dropinc %>% rename(dropinc = n)
+sample_counts_final   <- sample_counts_final   %>% rename(final = n)
+
+# full join all
+sample_counts_all <- sample_counts_org %>%
+  full_join(sample_counts_correc,  by = "prefix") %>%
+  full_join(sample_counts_dropinc, by = "prefix") %>%
+  full_join(sample_counts_final,   by = "prefix") %>%
+  arrange(prefix)
+
+sample_counts_all
+
+```
+
+```{r}
+main_weight_pro <- df_l$main %>%
+  left_join(
+    FDS_ZAM2025_clean_9$main %>% 
+      select(`_uuid`) %>% 
+      mutate(Include = 1),
+    by = "_uuid"
+  ) %>%
+  mutate(Include = ifelse(is.na(Include), 0, Include))
+
+HHroster_weight_pro <- df_l$HHroster %>%
+  left_join(
+    FDS_ZAM2025_clean_9$HHroster %>% 
+      select(`_uuid`) %>% 
+      mutate(Include = 1),
+    by = "_uuid"
+  ) %>%
+  mutate(Include = ifelse(is.na(Include), 0, Include))
+
+RA_adult_weight_pro <- df_l$RA_adult %>%
+  left_join(
+    FDS_ZAM2025_clean_9$RA_adult %>% 
+      select(`_uuid`) %>% 
+      mutate(Include = 1),
+    by = "_uuid"
+  ) %>%
+  mutate(Include = ifelse(is.na(Include), 0, Include))
+
+RA_caregiver_weight_pro <- df_l$RA_caregiver %>%
+  left_join(
+    FDS_ZAM2025_clean_9$RA_caregiver %>% 
+      select(`_uuid`) %>% 
+      mutate(Include = 1),
+    by = "_uuid"
+  ) %>%
+  mutate(Include = ifelse(is.na(Include), 0, Include))
+
+RA_woman_weight_pro <- df_l$RA_woman %>%
+  left_join(
+    FDS_ZAM2025_clean_9$RA_woman %>% 
+      select(`_uuid`) %>% 
+      mutate(Include = 1),
+    by = "_uuid"
+  ) %>%
+  mutate(Include = ifelse(is.na(Include), 0, Include))
+
+```
+```{r}
+FDS_ZAM2025_weights <- list(
+  main       = main_weight_pro,
+  HHroster   = HHroster_weight_pro,
+  RA_adult   = RA_adult_weight_pro,
+  RA_caregiver = RA_caregiver_weight_pro,
+  RA_woman   = RA_woman_weight_pro
+)
+saveRDS(FDS_ZAM2025_weights, "FDS_ZAM2025_weights.rds")
+
+```
+
+
+
+
+
+```{r}
+saveRDS(FDS_ZAM2025_clean_9, "FDS_ZAM2025_clean_9.rds")
+```
+ 
+
+

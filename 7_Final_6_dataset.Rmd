@@ -1,0 +1,54 @@
+---
+title: "7_Final_6_dataset"
+author: "Global Survey Team/Petra Kaps"
+date: "2025-06-25"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+
+## Load packages
+if (!requireNamespace("pacman", quietly = TRUE)) {
+install.packages("pacman")
+}
+
+pacman::p_load(readxl, purrr, scales, lubridate, haven, labelled, shiny, shinydashboard,
+               shinyWidgets, shinyauthr, shinyjs, tidyverse, fusen, plotly,
+               unhcrthemes, ggforce, ggridges, DT, bslib, readr, writexl, pins, sparkline, 
+               leaflet, shinyBS, mapboxer, zscorer, rlang, nipnTK, rsconnect, dm, robotoolbox,
+               Microsoft365R,expss)
+```
+
+##Step 7: Final 6 datasets
+This script creates the final 6 datasets, ready for cleaning. 
+
+```{r}
+ZAM_5_datasets_mobilemember_7 <- readRDS("ZAM_5_datasets_mobilemember_7.rds")
+```
+
+```{r}
+#Drop all non household member from the roster 
+ZAM_5_datasets_mobilemember_7$HHroster <- ZAM_5_datasets_mobilemember_7$HHroster %>%
+  filter(member == 1)
+
+```
+
+```{r}
+#Save final datasets, ready for cleaning 
+
+FDS_ZAM2025_toclean_8 <- list()
+FDS_ZAM2025_toclean_8$HHroster <- ZAM_5_datasets_mobilemember_7$HHroster
+FDS_ZAM2025_toclean_8$main <- ZAM_5_datasets_mobilemember_7$main
+FDS_ZAM2025_toclean_8$RA_adult <- ZAM_5_datasets_mobilemember_7$RA_adult
+FDS_ZAM2025_toclean_8$RA_woman <- ZAM_5_datasets_mobilemember_7$RA_woman
+FDS_ZAM2025_toclean_8$RA_caregiver <- ZAM_5_datasets_mobilemember_7$RA_caregiver
+#FDS_ZAM2025_toclean_8$HHroster_mobilemember <- ZAM_5_datasets_mobilemember_7$HHroster_mobilemember 
+```
+```{r}
+saveRDS(FDS_ZAM2025_toclean_8, "FDS_ZAM2025_toclean_8.rds")
+```
+

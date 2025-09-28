@@ -1,0 +1,120 @@
+---
+title: "6_Mobile_member"
+author: "Global Survey Team/Petra Kaps"
+date: "2025-06-25"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+
+## Load packages
+if (!requireNamespace("pacman", quietly = TRUE)) {
+install.packages("pacman")
+}
+
+pacman::p_load(readxl, purrr, scales, lubridate, haven, labelled, shiny, shinydashboard,
+               shinyWidgets, shinyauthr, shinyjs, tidyverse, fusen, plotly,
+               unhcrthemes, ggforce, ggridges, DT, bslib, readr, writexl, pins, sparkline, 
+               leaflet, shinyBS, mapboxer, zscorer, rlang, nipnTK, rsconnect, dm, robotoolbox,
+               Microsoft365R,expss)
+```
+##Step 6: Mobile member
+This script creates the individual roster dataset of mobile members. Mobile member does not have to be a member of the household, therefore mobile members who are not also the members of the household would not be captured in the HHroster (as non members will be removed after this step). Due to the change into the approach, the interviews will mobile members will not continue after 24th of June, however storing the data of those we have so far just in case. 
+
+```{r}
+ZAM_5_datasets_withrotation_6 <- readRDS("ZAM_5_datasets_withrotation_6.rds")
+```
+```{r}
+gp_migrant_repeat <- readRDS("gp_migrant_repeat.rds")
+
+```
+
+
+```{r}
+# Step 1: Merge mobile member repeat group with main to get the sample ID, merge by _uuid
+
+#Specify variables to keep 
+
+# Variables to retain from main
+hh_vars <- c(
+  "_uuid", "Intro_06", "Jmobilemember", "migrantavail",
+  "random1apwm_migr", "random_indexapwm_migr", "selected_migrant",
+  "rdmigrant", "mob_08_nuts4", "stratum"
+)
+
+# Variables to retain from gp_migrant
+gp_vars <- c(
+  "_uuid", "_index", "_parent_index",
+  "migrantName", "migrantmemb", "migrantaway", "ID_09MM",
+  "ID_17bMM", "ID_17cMM", "ID_17dMM", "migrantB", "migrantmembBck",
+  "migrantback", "selectnig", "selectmigpos", "gp_migrantaway",
+  "notemigrant1", "notemigrant2", "Mob_00d", "Mob_01", "othercountry_Mob_01",
+  "Mob_01a", "Mob_01b", "Mob_01c", "Mob_01d", "Mob_04", "notemob_04",
+  "Mob_04_year", "Mob_04_month", "Mob_05", "Mob_06", "Mob_06a",
+  "note_mob_06a", "Mob_06a_Year", "Mob_06a_Month", "Mob_07",
+  "othercountry_Mob_07", "Mob_08", "note_Mob_08", "Mob_08_province",
+  "Mob_08_county", "Mob_08_district", "Mob_08_village",
+  "Mob_08_district_label", "Mob_08_village_label", "Mob_08_districtvillage",
+  "Mob_09", "Mob_09a", "Mob_10", "Mob_11", "Mob_12", "Mob_12_phone",
+  "gp_migrantback", "notemback", "Mob_13", "Mob_14", "othercountry_Mob_14",
+  "Mob_14a", "Mob_14b", "Mob_14c", "Mob_14d", "Mob_15", "note_mob15",
+  "Mob_15_year", "Mob_15_month", "Mob_16", "notemob_16",
+  "Mob_16_year", "Mob_16_month", "Mob_17", "Mob_18", "Mob_19",
+  "othercountry_Mob_19", "Mob_20", "note_Mob_20", "Mob_20_province",
+  "Mob_20_county", "Mob_20_district", "Mob_20_village",
+  "Mob_21", "Mob_22", "Mob_23", "Mob_23_phonemob", "Final_Lang", "Final_Lang_specify"
+)
+
+gp_vars_present <- intersect(gp_vars, names(gp_migrant_repeat))
+hh_vars_present <- intersect(hh_vars, names(ZAM_5_datasets_withrotation_6$main))
+
+# Construct CATI dataset
+CATI <- gp_migrant_repeat %>%
+  select(all_of(gp_vars_present)) %>%
+  left_join(
+    ZAM_5_datasets_withrotation_6$main %>%
+      select(all_of(hh_vars_present)),
+    by = "_uuid"
+  )
+
+```
+```{r}
+CATI <- CATI %>%
+  mutate(
+    mm_rs_inclusion = as.integer(
+      (migrantaway == 1 | migrantback == 1) &
+      (as.numeric(as_factor(Mob_00d)) == 1 | as.numeric(as_factor(Mob_13)) == 1) &
+      (as.numeric(as_factor(Mob_19)) == 1 | as.numeric(as_factor(Mob_07)) == 1) &
+      (
+        ID_09MM %in% c("I", "II", "M", "H") |
+        ID_17bMM == 1 | ID_17cMM == 1 | ID_17dMM == 1 |
+        as.numeric(as_factor(Mob_01b)) == 1 | as.numeric(as_factor(Mob_01c)) == 1 | as.numeric(as_factor(Mob_01d)) == 1 |
+        as.numeric(as_factor(Mob_14b)) == 1 | as.numeric(as_factor(Mob_14c)) == 1 | as.numeric(as_factor(Mob_14d)) == 1
+      )
+    )
+  )
+CATI_selection <- CATI %>%
+  filter(mm_rs_inclusion == 1)
+```
+
+```{r}
+#Merge with roster 
+CATI_selection <- CATI_selection %>%
+  left_join(
+    ZAM_5_datasets_withrotation_6$HHroster,
+    by = c("_uuid", "migrantName" = "HH_01b")
+  )
+
+```
+```{r}
+ZAM_5_datasets_withrotation_6$HHroster_mobilemember <- CATI_selection
+```
+
+```{r}
+saveRDS(ZAM_5_datasets_withrotation_6, "ZAM_5_datasets_mobilemember_7.rds")
+```
+

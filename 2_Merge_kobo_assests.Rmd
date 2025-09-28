@@ -1,0 +1,173 @@
+---
+title: "2_Merge_kobo_assests"
+author: "Global Survey Team/Petra Kaps"
+date: "2025-06-19"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+
+## Load packages
+if (!requireNamespace("pacman", quietly = TRUE)) {
+install.packages("pacman")
+}
+
+pacman::p_load(readxl, purrr, scales, lubridate, haven, labelled, shiny, shinydashboard,
+               shinyWidgets, shinyauthr, shinyjs, tidyverse, fusen, plotly,
+               unhcrthemes, ggforce, ggridges, DT, bslib, readr, writexl, pins, sparkline, 
+               leaflet, shinyBS, mapboxer, zscorer, rlang, nipnTK, rsconnect, dm, robotoolbox,
+               Microsoft365R,expss)
+```
+##Step 2: FDS ZAM consist of 3 separate Kobo projects, each with 33 data tables. This scripts flattens all tables and connect them to their parent tables, bringing _uuid and sample into child tables. Additionally, 3 projects are merged into 1.
+
+**DO NOT PUSH ANY SAVED DATA SETS** 
+
+###Step 2.1 - Before flattering and merging, check keys and relationships between tables
+```{r}
+fks_1 <- dm::dm_get_all_fks(df_raw[[1]])
+fks_2 <- dm::dm_get_all_fks(df_raw[[2]])
+fks_3 <- dm::dm_get_all_fks(df_raw[[3]])
+write.csv(fks_1, "foreign_keys_1.csv", row.names = FALSE)
+write.csv(fks_2, "foreign_keys_2.csv", row.names = FALSE)
+write.csv(fks_3, "foreign_keys_3.csv", row.names = FALSE)
+
+```
+All tables with the exception of crop_roster are connected to main. Crop_roster is connected to plot_roster_info. 
+
+###Step 2.2 - Flatten tables and connected them to parent tables, bring uuid and sample IDs.
+```{r}
+library(dplyr)
+library(purrr)
+library(dm)
+#Function to flatten the tables per project, pulling Intro_06 and uuid into each child table. 
+
+# flattened_dm <- function(df) {
+#   df_m <- list()
+#   tables <- dm::dm_get_tables(df)
+#   
+#   main_keys <- tables$main %>% select(`_uuid`, Intro_06, `_index`)
+#   plot_keys <- if ("plot_roster_info" %in% names(tables)) {
+#     tables$plot_roster_info %>% select(`_index`, `_parent_index`)
+#   } else {
+#     tibble::tibble()
+#   }
+#   
+#   all_tables <- names(tables)
+#   repeat_tables <- setdiff(all_tables, "main")
+#   
+#   for (tbl_name in repeat_tables) {
+#     child_tbl <- tables[[tbl_name]]
+# 
+#     if (tbl_name == "crop_roster") {
+#       # Special case: crop_roster linked to plot_roster_info, then to main
+#       if (nrow(plot_keys) > 0) {
+#         flattened <- child_tbl %>%
+#           left_join(plot_keys, by = c("_parent_index" = "_index")) %>%
+#           left_join(main_keys, by = c("_parent_index" = "_index")) %>%
+#           select(any_of(names(child_tbl)), `_uuid`, Intro_06)
+#       } else {
+#         flattened <- child_tbl %>%
+#           left_join(main_keys, by = setNames("_index", "_parent_index")) %>%
+#           select(any_of(names(child_tbl)), `_uuid`, Intro_06)
+#       }
+#     }
+#     if (tbl_name == "crop_roster") {
+#   if (nrow(plot_keys) > 0) {
+#     flattened <- child_tbl %>%
+#       left_join(plot_keys, by = c("_parent_index" = "_index")) %>%
+#       left_join(main_keys, by = c("_parent_index" = "_index")) %>%  # THIS IS WRONG
+#       select(any_of(names(child_tbl)), `_uuid`, Intro_06)
+#   } else {
+#     flattened <- child_tbl %>%
+#       left_join(main_keys, by = setNames("_index", "_parent_index")) %>%
+#       select(any_of(names(child_tbl)), `_uuid`, Intro_06)
+#   }
+# }
+#     else {
+#       # Normal repeats: join only keys from main
+#       flattened <- child_tbl %>%
+#         left_join(main_keys, by = setNames("_index", "_parent_index")) %>%
+#         select(any_of(names(child_tbl)), `_uuid`, Intro_06)
+#     }
+#     
+#     df_m[[tbl_name]] <- as.data.frame(flattened)
+#   }
+#   
+#   # Add main as is (converted to data.frame)
+#   df_m$main <- as.data.frame(tables$main)
+#   
+#   return(df_m)
+# }
+flattened_dm <- function(df) {
+  df_m <- list()
+  tables <- dm::dm_get_tables(df)
+  
+  main_keys <- tables$main %>% select(`_uuid`, Intro_06, `_index`)
+  plot_keys <- if ("plot_roster_info" %in% names(tables)) {
+    tables$plot_roster_info %>% select(`_index`, `_parent_index`)
+  } else {
+    tibble::tibble()
+  }
+  
+  all_tables <- names(tables)
+  repeat_tables <- setdiff(all_tables, "main")
+  
+  for (tbl_name in repeat_tables) {
+    child_tbl <- tables[[tbl_name]]
+    
+    if (tbl_name == "crop_roster") {
+      if (nrow(plot_keys) > 0) {
+        plot_keys_renamed <- plot_keys %>% rename(plot_parent_index = `_parent_index`)
+        
+        flattened <- child_tbl %>%
+          left_join(plot_keys_renamed, by = c("_parent_index" = "_index")) %>%
+          left_join(main_keys, by = c("plot_parent_index" = "_index")) %>%
+          select(any_of(names(child_tbl)), `_uuid`, Intro_06)
+      } else {
+        flattened <- child_tbl %>%
+          left_join(main_keys, by = setNames("_index", "_parent_index")) %>%
+          select(any_of(names(child_tbl)), `_uuid`, Intro_06)
+      }
+    } else {
+      flattened <- child_tbl %>%
+        left_join(main_keys, by = setNames("_index", "_parent_index")) %>%
+        select(any_of(names(child_tbl)), `_uuid`, Intro_06)
+    }
+    
+    df_m[[tbl_name]] <- as.data.frame(flattened)
+  }
+  
+  df_m$main <- as.data.frame(tables$main)
+  return(df_m)
+}
+
+
+```
+```{r}
+df_flattened_list <- lapply(df_list_ZAM_raw_0, flattened_dm)
+
+```
+**SAVE THE FLATTENED DATASET - DO NOT PUSH TO GIT**
+```{r}
+saveRDS(df_flattened_list, "df_ZAM_raw_flat_1.rds")
+```
+```{r}
+#Load the raw flat data saved in the previous step. 
+df_ZAM_raw_flat_1 <- readRDS("df_ZAM_raw_flat_1.rds")
+```
+
+###Step 2.2 - Dynamically merge 3 projects into 1
+ 
+```{r}
+# Call the function to merge dynamically
+df_ZAM_raw_flat_merged_2 <- merge_all_dataframes_dynamic(df_ZAM_raw_flat_1)
+```
+
+```{r}
+saveRDS(df_ZAM_raw_flat_merged_2, "df_ZAM_raw_flat_merged_2.rds")
+```
+

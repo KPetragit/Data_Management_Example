@@ -1,0 +1,1210 @@
+---
+title: "4_Split_to_5_datasets"
+author: "Global Survey Team/Petra Kaps"
+date: "2025-06-23"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+
+## Load packages
+if (!requireNamespace("pacman", quietly = TRUE)) {
+install.packages("pacman")
+}
+
+pacman::p_load(readxl, purrr, scales, lubridate, haven, labelled, shiny, shinydashboard,
+               shinyWidgets, shinyauthr, shinyjs, tidyverse, fusen, plotly,
+               unhcrthemes, ggforce, ggridges, DT, bslib, readr, writexl, pins, sparkline, 
+               leaflet, shinyBS, mapboxer, zscorer, rlang, nipnTK, rsconnect, dm, robotoolbox,
+               Microsoft365R,expss)
+```
+##Step 4: Split the main dataset into 4 respondents, merge the repeat groups, and create the merged roster
+This is a script to split the main dataset into 4 separate datasets, based on respondent - Head of the Household, Random Adult, Random Woman, Caregiver. 
+
+Secondly, repeat groups are incorporated into the 4 separate datasets. The 5th data set on individual level - hhroster is created. 
+
+
+```{r}
+df_ZAM_clean_repeat_HH_3 <- readRDS("df_ZAM_clean_repeat_HH_3.rds")
+```
+
+```{r}
+df_ZAM_split_4 <- list()
+```
+
+###Step 4.1 - split dataset 
+
+Split the main dataset into 4 separate datsets based on respondent, and incorporate additional flattened multiple select variables. 
+
+```{r}
+df_ZAM_split_4$main <- df_ZAM_clean_repeat_HH_3$main
+```
+```{r}
+#Load file with FDS Kobo form names in order 
+FDS_ZAM_coloumn_names <- read_excel("FDS_ZAM_coloumn_names.xlsx")
+```
+
+```{r}
+#Split the main dataset into 4 dataset, matching the variable names based on the Kobo xls form. 
+
+main_df <- df_ZAM_clean_repeat_HH_3$main
+
+respondents <- c("main", "RA_adult", "RA_woman", "RA_caregiver")
+key_vars <- c("_uuid", "_index", "source", "_id", "uuid")
+
+for (resp in respondents) {
+  vars <- FDS_ZAM_coloumn_names %>%
+    filter(respondent == resp) %>%
+    pull(name) %>%
+    intersect(names(main_df))
+  
+  # Always keep key_vars in each split if they exist in main_df
+  vars <- union(key_vars, vars)
+  
+  df_ZAM_split_4[[resp]] <- main_df %>%
+    select(all_of(vars))
+}
+
+assigned_vars <- FDS_ZAM_coloumn_names %>%
+  filter(respondent %in% respondents) %>%
+  pull(name) %>%
+  intersect(names(main_df))
+
+remaining_vars <- setdiff(names(main_df), union(assigned_vars, key_vars))
+
+# main_other keeps key_vars + remaining vars
+df_ZAM_split_4$main_other <- main_df %>%
+  select(all_of(c(key_vars, remaining_vars)))
+
+```
+
+```{r}
+#Manual assignment of remaining key and time variables 
+vars_to_add <- c(
+  "__version__", "instanceID", "_xform_id_string", "_status", "_submission_time",
+  "_validation_status", "_submitted_by", "rootUuid",
+  "Final_04_latitude", "Final_04_longitude", "Final_04_altitude", "Final_04_precision",
+  "Intention_time", "_submission_time", "Employement_time", "Assets01_time",
+  "Intro_06a_repeat_count", "HHmemberInfo_count", "identification_questions_repeat_count",
+  "rosterPart2_count", "Education_count", "lang_count", "dis_seeing_count", "dis_hearing_count",
+  "dis_walking_count", "dis_remembering_count", "dis_self_care_count", "dis_communicating_count",
+  "Livestock_repeat_count", "Byproduct_repeat_count", "repeat_IncSource2_count",
+  "group_ExpShock03_count", "programme_group_count", "ScProtec14_group_count",
+  "remittance_sender_roster_count", "remittance_recipient_roster_count",
+  "plot_roster_info_count", "rptEduc16_17_count", "gp_migrant_count",
+  "HH02trigger", "DW01_6trigger", "AC01_1trigger", "AC10_03_EndTime"
+)
+
+vars_existing <- intersect(vars_to_add, names(df_ZAM_split_4$main_other))
+
+# Add variables from main_other to main
+df_ZAM_split_4$main <- df_ZAM_split_4$main %>%
+  left_join(
+    df_ZAM_split_4$main_other %>%
+      select(`_uuid`, all_of(vars_existing)),
+    by = "_uuid"
+  )
+
+# Remove moved vars from main_other
+df_ZAM_split_4$main_other <- df_ZAM_split_4$main_other %>%
+  select(-all_of(vars_existing))
+
+
+```
+```{r}
+#Manual sorting of flattened multiple select variables into the 4 dataset
+
+datasets <- c("main", "RA_adult", "RA_caregiver", "RA_woman")
+main_other_vars <- setdiff(names(df_ZAM_split_4$main_other), "_uuid")
+
+# Extract base names from main_other variables by removing suffix after last underscore
+base_names <- str_replace(main_other_vars, "_[^_]+$", "")
+
+# Create a named vector: names = full var, values = base var
+var_map <- setNames(base_names, main_other_vars)
+
+all_added_vars <- character(0)
+
+for (ds in datasets) {
+  target_vars <- names(df_ZAM_split_4[[ds]])
+  target_vars_no_uuid <- setdiff(target_vars, "_uuid")
+
+  # Variables to add for this dataset
+  vars_to_add <- names(var_map)[var_map %in% target_vars_no_uuid]
+
+  if (length(vars_to_add) == 0) next
+
+  to_add_df <- df_ZAM_split_4$main_other %>%
+    select(`_uuid`, all_of(vars_to_add))
+
+  ds_df <- df_ZAM_split_4[[ds]]
+
+  for (full_var in vars_to_add) {
+    base_var <- var_map[[full_var]]
+
+    # Skip if already present
+    if (full_var %in% names(ds_df)) next
+
+    base_pos <- which(names(ds_df) == base_var)
+
+    if (length(base_pos) == 0) {
+      # Insert at end if base var missing
+      ds_df <- bind_cols(ds_df, to_add_df[, full_var, drop = FALSE])
+    } else {
+      before <- ds_df[, 1:base_pos, drop = FALSE]
+      after <- if (base_pos < ncol(ds_df)) ds_df[, (base_pos + 1):ncol(ds_df), drop = FALSE] else NULL
+      ds_df <- bind_cols(before, to_add_df[, full_var, drop = FALSE], after)
+    }
+  }
+
+  df_ZAM_split_4[[ds]] <- ds_df
+
+  all_added_vars <- c(all_added_vars, vars_to_add)
+  all_added_vars <- unique(all_added_vars)
+}
+
+# Remove moved vars from main_other
+df_ZAM_split_4$main_other <- df_ZAM_split_4$main_other %>%
+  select(-all_of(all_added_vars))
+
+```
+
+```{r}
+#Adding food coloumns which were removed from the Kobo form at some stage but we still have them in the dataset from the beginning of the data collection. 
+
+food_vars <- grep("^Food", names(df_ZAM_split_4$main_other), value = TRUE)
+
+df_ZAM_split_4$main <- df_ZAM_split_4$main %>%
+  left_join(
+    df_ZAM_split_4$main_other %>% select(`_uuid`, all_of(food_vars)),
+    by = "_uuid"
+  )
+
+df_ZAM_split_4$main_other <- df_ZAM_split_4$main_other %>%
+  select(-all_of(food_vars))
+
+```
+
+```{r}
+#Catch any remaining variables in main_other and add them to main. This is to ensure any newly added variables after this script was developed are added to the working datasets. 
+
+# Identify remaining vars in main_other excluding _uuid
+remaining_vars <- setdiff(names(df_ZAM_split_4$main_other), "_uuid")
+
+# Exclude vars already in main
+vars_to_add <- setdiff(remaining_vars, names(df_ZAM_split_4$main))
+
+if (length(vars_to_add) > 0) {
+  df_ZAM_split_4$main <- df_ZAM_split_4$main %>%
+    left_join(
+      df_ZAM_split_4$main_other %>% select(`_uuid`, all_of(vars_to_add)),
+      by = "_uuid"
+    )
+
+  df_ZAM_split_4$main_other <- df_ZAM_split_4$main_other %>%
+    select(-all_of(vars_to_add))
+}
+
+```
+
+###Step 4.2 - merge repeat groups into the 4 datasets
+
+"contactAttempt" - main, after contsum
+"group_ExpShock02" - main, After ExpShock01
+"group_ExpShock03" - main, after number_shocks
+"sender_nms" - RA_adult, after remittances_introduction2
+"remittance_sender_roster" - RA_adult, before remittances_introduction3
+"recipient_nms"  - RA_adult, after remittances_introduction4
+"remittance_recipient_roster"  - RA_adult, before access_to_information_introduction
+"ScProtec02_group" - main, after ScProtec01 
+"programme_group" - main, after count_ScProtec02 
+"ScProtec13_group" - main, after ScProtec12
+"ScProtec14_group"- main, after countScProtec13
+"plot_name" - main, after plot_roster_intro
+"plot_roster_info" - main, after Land04b
+"repeat_IncSource2" - main, after IncSource2
+"rptEduc16_17" - RA_adult, after EducR15
+"Livestock_repeat" - main, after Livestock_ms
+"Byproduct_repeat" - main, after Byproduct_ms
+"Intro_06a_repeat" - main, after Intro_06a 
+
+```{r}
+#"contactAttempt" - main, after contsum 
+
+contact_df <- df_ZAM_clean_repeat_HH_3$contactAttempt %>%
+  select(-c(`_parent_index`, `_parent_table_name`, source, Intro_06))
+
+pos_contsum <- which(names(df_ZAM_split_4$main) == "contsum")
+if (length(pos_contsum) == 0) pos_contsum <- ncol(df_ZAM_split_4$main)
+
+contact_cols <- setdiff(names(contact_df), "_uuid")
+main_cols <- names(df_ZAM_split_4$main)
+
+cols_before <- main_cols[1:pos_contsum]
+cols_after <- setdiff(main_cols[(pos_contsum + 1):length(main_cols)], contact_cols)
+cols_ordered <- c(cols_before, contact_cols, cols_after)
+
+merged_df <- df_ZAM_split_4$main %>%
+  left_join(contact_df, by = "_uuid") %>%
+  select(all_of(cols_ordered))
+
+df_ZAM_split_4$main <- merged_df
+
+
+
+```
+
+```{r}
+#"group_ExpShock02" - main, After ExpShock01
+
+# Prepare group_ExpShock02, drop unwanted columns
+group_exp_df <- df_ZAM_clean_repeat_HH_3$group_ExpShock02 %>%
+  select(-c(`_parent_index`, `_parent_table_name`, source, Intro_06))
+
+pos_exp <- which(names(df_ZAM_split_4$main) == "ExpShock01")
+if (length(pos_exp) == 0) pos_exp <- ncol(df_ZAM_split_4$main)
+
+group_exp_cols <- setdiff(names(group_exp_df), "_uuid")
+main_cols <- names(df_ZAM_split_4$main)
+
+cols_before <- main_cols[1:pos_exp]
+cols_after <- setdiff(main_cols[(pos_exp + 1):length(main_cols)], group_exp_cols)
+cols_ordered <- c(cols_before, group_exp_cols, cols_after)
+
+test_df <- df_ZAM_split_4$main %>%
+  left_join(group_exp_df, by = "_uuid") %>%
+  select(all_of(cols_ordered))
+
+df_ZAM_split_4$main <- test_df
+```
+
+
+```{r}
+#"group_ExpShock03" - main, after number_shocks
+# Prepare group_ExpShock03, drop unwanted columns
+group_exp03_df <- df_ZAM_clean_repeat_HH_3$group_ExpShock03 %>%
+  select(-c(`_parent_index`, `_parent_table_name`, source, Intro_06))
+
+pos_num_shocks <- which(names(df_ZAM_split_4$main) == "number_shocks")
+if (length(pos_num_shocks) == 0) pos_num_shocks <- ncol(df_ZAM_split_4$main)
+
+group_exp03_cols <- setdiff(names(group_exp03_df), "_uuid")
+main_cols <- names(df_ZAM_split_4$main)
+
+cols_before <- main_cols[1:pos_num_shocks]
+cols_after <- setdiff(main_cols[(pos_num_shocks + 1):length(main_cols)], group_exp03_cols)
+cols_ordered <- c(cols_before, group_exp03_cols, cols_after)
+
+test_df <- df_ZAM_split_4$main %>%
+  left_join(group_exp03_df, by = "_uuid") %>%
+  select(all_of(cols_ordered))
+
+df_ZAM_split_4$main <- test_df
+```
+
+```{r}
+#"ScProtec02_group" - main, after ScProtec01 
+
+# Prepare ScProtec02_group, drop unwanted columns
+scprotec02_df <- df_ZAM_clean_repeat_HH_3$ScProtec02_group %>%
+  select(-c(`_parent_index`, `_parent_table_name`, source, Intro_06))
+
+pos_sp_intro2 <- which(names(df_ZAM_split_4$main) == "ScProtec01")
+if (length(pos_sp_intro2) == 0) pos_sp_intro2 <- ncol(df_ZAM_split_4$main)
+
+scprotec02_cols <- setdiff(names(scprotec02_df), "_uuid")
+main_cols <- names(df_ZAM_split_4$main)
+
+cols_before <- main_cols[1:pos_sp_intro2]
+cols_after <- setdiff(main_cols[(pos_sp_intro2 + 1):length(main_cols)], scprotec02_cols)
+cols_ordered <- c(cols_before, scprotec02_cols, cols_after)
+
+test_df <- df_ZAM_split_4$main %>%
+  left_join(scprotec02_df, by = "_uuid") %>%
+  select(all_of(cols_ordered))
+
+df_ZAM_split_4$main <- test_df
+```
+
+
+```{r}
+#"programme_group" - main, after count_ScProtec02 
+
+
+# Prepare programme_group, drop unwanted columns
+programme_df <- df_ZAM_clean_repeat_HH_3$programme_group %>%
+  select(-c(`_parent_index`, `_parent_table_name`, source, Intro_06))
+
+pos_count_scprotec02 <- which(names(df_ZAM_split_4$main) == "count_ScProtec02")
+if (length(pos_count_scprotec02) == 0) pos_count_scprotec02 <- ncol(df_ZAM_split_4$main)
+
+main_cols <- names(df_ZAM_split_4$main)
+cols_before <- main_cols[1:pos_count_scprotec02]
+cols_after <- main_cols[(pos_count_scprotec02 + 1):length(main_cols)]
+cols_after <- cols_after[!is.na(cols_after)]
+
+programme_cols <- setdiff(names(programme_df), "_uuid")
+cols_after <- setdiff(cols_after, programme_cols)
+
+cols_ordered <- c(cols_before, programme_cols, cols_after)
+
+test_df <- df_ZAM_split_4$main %>%
+  left_join(programme_df, by = "_uuid") %>%
+  select(all_of(cols_ordered))
+
+df_ZAM_split_4$main <- test_df
+
+```
+
+```{r}
+#"ScProtec13_group" - main, after countScProtec13
+
+# Prepare ScProtec13_group, drop unwanted columns
+scprotec13_df <- df_ZAM_clean_repeat_HH_3$ScProtec13_group %>%
+  select(-c(`_parent_index`, `_parent_table_name`, source, Intro_06))
+
+pos_count_scprotec13 <- which(names(df_ZAM_split_4$main) == "ScProtec12")
+if (length(pos_count_scprotec13) == 0) pos_count_scprotec13 <- ncol(df_ZAM_split_4$main)
+
+main_cols <- names(df_ZAM_split_4$main)
+cols_before <- main_cols[1:pos_count_scprotec13]
+cols_after <- main_cols[(pos_count_scprotec13 + 1):length(main_cols)]
+cols_after <- cols_after[!is.na(cols_after)]
+
+scprotec13_cols <- setdiff(names(scprotec13_df), "_uuid")
+cols_after <- setdiff(cols_after, scprotec13_cols)
+
+cols_ordered <- c(cols_before, scprotec13_cols, cols_after)
+
+test_df <- df_ZAM_split_4$main %>%
+  left_join(scprotec13_df, by = "_uuid") %>%
+  select(all_of(cols_ordered))
+
+df_ZAM_split_4$main <- test_df
+
+```
+
+```{r}
+#"ScProtec14_group"- main, after countScProtec13
+
+# Prepare ScProtec14_group, drop unwanted columns
+scprotec14_df <- df_ZAM_clean_repeat_HH_3$ScProtec14_group %>%
+  select(-c(`_parent_index`, `_parent_table_name`, source, Intro_06))
+
+pos_count_scprotec13 <- which(names(df_ZAM_split_4$main) == "countScProtec13")
+if (length(pos_count_scprotec13) == 0) pos_count_scprotec13 <- ncol(df_ZAM_split_4$main)
+
+main_cols <- names(df_ZAM_split_4$main)
+cols_before <- main_cols[1:pos_count_scprotec13]
+cols_after <- main_cols[(pos_count_scprotec13 + 1):length(main_cols)]
+cols_after <- cols_after[!is.na(cols_after)]
+
+scprotec14_cols <- setdiff(names(scprotec14_df), "_uuid")
+cols_after <- setdiff(cols_after, scprotec14_cols)
+
+cols_ordered <- c(cols_before, scprotec14_cols, cols_after)
+
+test_df <- df_ZAM_split_4$main %>%
+  left_join(scprotec14_df, by = "_uuid") %>%
+  select(all_of(cols_ordered))
+
+df_ZAM_split_4$main <- test_df
+
+```
+
+```{r}
+#"plot_name" - main, after plot_roster_intro
+
+# Prepare plot_name dataset, drop unwanted columns
+plot_name_df <- df_ZAM_clean_repeat_HH_3$plot_name %>%
+  select(-c(`_parent_index`, `_parent_table_name`, source, Intro_06))
+
+pos_plot_intro <- which(names(df_ZAM_split_4$main) == "plot_roster_intro")
+if (length(pos_plot_intro) == 0) pos_plot_intro <- ncol(df_ZAM_split_4$main)
+
+main_cols <- names(df_ZAM_split_4$main)
+cols_before <- main_cols[1:pos_plot_intro]
+cols_after <- main_cols[(pos_plot_intro + 1):length(main_cols)]
+cols_after <- cols_after[!is.na(cols_after)]
+
+plot_name_cols <- setdiff(names(plot_name_df), "_uuid")
+cols_after <- setdiff(cols_after, plot_name_cols)
+
+cols_ordered <- c(cols_before, plot_name_cols, cols_after)
+
+test_df <- df_ZAM_split_4$main %>%
+  left_join(plot_name_df, by = "_uuid") %>%
+  select(all_of(cols_ordered))
+
+df_ZAM_split_4$main <- test_df
+
+```
+
+```{r}
+#"plot_roster_info" - main, after Land04b
+
+# Prepare plot_roster_info dataset, drop unwanted columns
+plot_roster_info_df <- df_ZAM_clean_repeat_HH_3$plot_roster_info %>%
+  select(-c(source))
+
+pos_land04b <- which(names(df_ZAM_split_4$main) == "Land04b")
+if (length(pos_land04b) == 0) pos_land04b <- ncol(df_ZAM_split_4$main)
+
+main_cols <- names(df_ZAM_split_4$main)
+cols_before <- main_cols[1:pos_land04b]
+cols_after <- main_cols[(pos_land04b + 1):length(main_cols)]
+cols_after <- cols_after[!is.na(cols_after)]
+
+plot_roster_info_cols <- setdiff(names(plot_roster_info_df), "_uuid")
+cols_after <- setdiff(cols_after, plot_roster_info_cols)
+
+cols_ordered <- c(cols_before, plot_roster_info_cols, cols_after)
+
+test_df <- df_ZAM_split_4$main %>%
+  left_join(plot_roster_info_df, by = "_uuid") %>%
+  select(all_of(cols_ordered))
+
+df_ZAM_split_4$main <- test_df
+
+
+```
+
+```{r}
+#"repeat_IncSource2" - main, after IncSource2
+
+# Prepare repeat_IncSource2 dataset, drop unwanted columns
+repeat_incsource2_df <- df_ZAM_clean_repeat_HH_3$repeat_IncSource2 %>%
+  select(-c(`_parent_index`, `_parent_table_name`, source, Intro_06))
+
+pos_incsource2 <- which(names(df_ZAM_split_4$main) == "IncSource2")
+if (length(pos_incsource2) == 0) pos_incsource2 <- ncol(df_ZAM_split_4$main)
+
+main_cols <- names(df_ZAM_split_4$main)
+cols_before <- main_cols[1:pos_incsource2]
+cols_after <- main_cols[(pos_incsource2 + 1):length(main_cols)]
+cols_after <- cols_after[!is.na(cols_after)]
+
+repeat_incsource2_cols <- setdiff(names(repeat_incsource2_df), "_uuid")
+cols_after <- setdiff(cols_after, repeat_incsource2_cols)
+
+cols_ordered <- c(cols_before, repeat_incsource2_cols, cols_after)
+
+test_df <- df_ZAM_split_4$main %>%
+  left_join(repeat_incsource2_df, by = "_uuid") %>%
+  select(all_of(cols_ordered))
+
+
+df_ZAM_split_4$main <- test_df
+
+```
+
+```{r}
+#"Livestock_repeat" - main, after Livestock_ms
+
+# Prepare Livestock_repeat dataset, drop unwanted columns
+livestock_repeat_df <- df_ZAM_clean_repeat_HH_3$Livestock_repeat %>%
+  select(-c(`_parent_index`, `_parent_table_name`, source, Intro_06))
+
+pos_livestock_ms <- which(names(df_ZAM_split_4$main) == "Livestock_ms")
+if (length(pos_livestock_ms) == 0) pos_livestock_ms <- ncol(df_ZAM_split_4$main)
+
+main_cols <- names(df_ZAM_split_4$main)
+cols_before <- main_cols[1:pos_livestock_ms]
+cols_after <- main_cols[(pos_livestock_ms + 1):length(main_cols)]
+cols_after <- cols_after[!is.na(cols_after)]
+
+livestock_repeat_cols <- setdiff(names(livestock_repeat_df), "_uuid")
+cols_after <- setdiff(cols_after, livestock_repeat_cols)
+
+cols_ordered <- c(cols_before, livestock_repeat_cols, cols_after)
+
+test_df <- df_ZAM_split_4$main %>%
+  left_join(livestock_repeat_df, by = "_uuid") %>%
+  select(all_of(cols_ordered))
+
+df_ZAM_split_4$main <- test_df
+
+```
+
+```{r}
+#"Byproduct_repeat" - main, after Byproduct_ms
+
+
+# Prepare Byproduct_repeat dataset, drop unwanted columns
+byproduct_repeat_df <- df_ZAM_clean_repeat_HH_3$Byproduct_repeat %>%
+  select(-c(`_parent_index`, `_parent_table_name`, source, Intro_06))
+
+pos_byproduct_ms <- which(names(df_ZAM_split_4$main) == "Byproduct_ms")
+if (length(pos_byproduct_ms) == 0) pos_byproduct_ms <- ncol(df_ZAM_split_4$main)
+
+main_cols <- names(df_ZAM_split_4$main)
+cols_before <- main_cols[1:pos_byproduct_ms]
+cols_after <- main_cols[(pos_byproduct_ms + 1):length(main_cols)]
+cols_after <- cols_after[!is.na(cols_after)]
+
+byproduct_repeat_cols <- setdiff(names(byproduct_repeat_df), "_uuid")
+cols_after <- setdiff(cols_after, byproduct_repeat_cols)
+
+cols_ordered <- c(cols_before, byproduct_repeat_cols, cols_after)
+
+test_df <- df_ZAM_split_4$main %>%
+  left_join(byproduct_repeat_df, by = "_uuid") %>%
+  select(all_of(cols_ordered))
+
+df_ZAM_split_4$main <- test_df
+
+```
+
+```{r}
+#"Intro_06a_repeat" - main, after Intro_06a 
+
+intro_06a_repeat_df <- df_ZAM_clean_repeat_HH_3$Intro_06a_repeat %>%
+  select(-c(`_parent_index`, `_parent_table_name`, source, Intro_06))
+
+pos_intro_06a <- which(names(df_ZAM_split_4$main) == "Intro_06a")
+if (length(pos_intro_06a) == 0) pos_intro_06a <- ncol(df_ZAM_split_4$main)
+
+main_cols <- names(df_ZAM_split_4$main)
+cols_before <- main_cols[1:pos_intro_06a]
+cols_after <- main_cols[(pos_intro_06a + 1):length(main_cols)]
+cols_after <- cols_after[!is.na(cols_after)]
+
+intro_06a_repeat_cols <- setdiff(names(intro_06a_repeat_df), "_uuid")
+cols_after <- setdiff(cols_after, intro_06a_repeat_cols)
+
+cols_ordered <- c(cols_before, intro_06a_repeat_cols, cols_after)
+
+test_df <- df_ZAM_split_4$main %>%
+  left_join(intro_06a_repeat_df, by = "_uuid") %>%
+  select(all_of(cols_ordered))
+
+df_ZAM_split_4$main <- test_df
+```
+
+Now repeat groups to RA_ADULT
+
+```{r}
+# "sender_nms" - RA_adult, after remittances_introduction2
+
+
+# Prepare sender_nms dataset, drop unwanted columns
+sender_nms_df <- df_ZAM_clean_repeat_HH_3$sender_nms %>%
+  select(-c(`_parent_index`, `_parent_table_name`, source, Intro_06))
+
+pos_remit_intro2 <- which(names(df_ZAM_split_4$RA_adult) == "remittances_introduction2")
+if (length(pos_remit_intro2) == 0) pos_remit_intro2 <- ncol(df_ZAM_split_4$RA_adult)
+
+adult_cols <- names(df_ZAM_split_4$RA_adult)
+cols_before <- adult_cols[1:pos_remit_intro2]
+cols_after <- adult_cols[(pos_remit_intro2 + 1):length(adult_cols)]
+cols_after <- cols_after[!is.na(cols_after)]
+
+sender_nms_cols <- setdiff(names(sender_nms_df), "_uuid")
+cols_after <- setdiff(cols_after, sender_nms_cols)
+
+cols_ordered <- c(cols_before, sender_nms_cols, cols_after)
+
+test_df_RA <- df_ZAM_split_4$RA_adult %>%
+  left_join(sender_nms_df, by = "_uuid") %>%
+  select(all_of(cols_ordered))
+
+df_ZAM_split_4$RA_adult <- test_df_RA
+
+```
+
+```{r}
+# "remittance_sender_roster" - RA_adult, before remittances_introduction3
+
+# Prepare remittance_sender_roster dataset, drop unwanted columns
+remittance_sender_df <- df_ZAM_clean_repeat_HH_3$remittance_sender_roster %>%
+  select(-c(`_parent_index`, `_parent_table_name`, source, Intro_06))
+
+pos_remit_intro3 <- which(names(df_ZAM_split_4$RA_adult) == "remittances_introduction3")
+if (length(pos_remit_intro3) == 0) pos_remit_intro3 <- ncol(df_ZAM_split_4$RA_adult)
+
+adult_cols <- names(df_ZAM_split_4$RA_adult)
+
+# To place before remittances_introduction3, insert at position pos_remit_intro3 - 1
+cols_before <- adult_cols[1:(pos_remit_intro3 - 1)]
+cols_after <- adult_cols[pos_remit_intro3:length(adult_cols)]
+cols_after <- cols_after[!is.na(cols_after)]
+
+remittance_sender_cols <- setdiff(names(remittance_sender_df), "_uuid")
+cols_after <- setdiff(cols_after, remittance_sender_cols)
+
+cols_ordered <- c(cols_before, remittance_sender_cols, cols_after)
+
+test_df_RA <- df_ZAM_split_4$RA_adult %>%
+  left_join(remittance_sender_df, by = "_uuid") %>%
+  select(all_of(cols_ordered))
+df_ZAM_split_4$RA_adult <- test_df_RA
+
+```
+
+```{r}
+# "recipient_nms"  - RA_adult, after remittances_introduction4
+
+# Prepare recipient_nms dataset, drop unwanted columns
+recipient_nms_df <- df_ZAM_clean_repeat_HH_3$recipient_nms %>%
+  select(-c(`_parent_index`, `_parent_table_name`, source, Intro_06))
+
+pos_remit_intro4 <- which(names(df_ZAM_split_4$RA_adult) == "remittances_introduction4")
+if (length(pos_remit_intro4) == 0) pos_remit_intro4 <- ncol(df_ZAM_split_4$RA_adult)
+
+adult_cols <- names(df_ZAM_split_4$RA_adult)
+cols_before <- adult_cols[1:pos_remit_intro4]
+cols_after <- adult_cols[(pos_remit_intro4 + 1):length(adult_cols)]
+cols_after <- cols_after[!is.na(cols_after)]
+
+recipient_nms_cols <- setdiff(names(recipient_nms_df), "_uuid")
+cols_after <- setdiff(cols_after, recipient_nms_cols)
+
+cols_ordered <- c(cols_before, recipient_nms_cols, cols_after)
+
+test_df_RA <- df_ZAM_split_4$RA_adult %>%
+  left_join(recipient_nms_df, by = "_uuid") %>%
+  select(all_of(cols_ordered))
+
+
+df_ZAM_split_4$RA_adult <- test_df_RA
+```
+
+```{r}
+# "remittance_recipient_roster"  - RA_adult, before access_to_information_introduction
+
+# Prepare remittance_recipient_roster dataset, drop unwanted columns
+remittance_recipient_df <- df_ZAM_clean_repeat_HH_3$remittance_recipient_roster %>%
+  select(-c(`_parent_index`, `_parent_table_name`, source, Intro_06))
+
+pos_access_info_intro <- which(names(df_ZAM_split_4$RA_adult) == "access_to_information_introduction")
+if (length(pos_access_info_intro) == 0) pos_access_info_intro <- ncol(df_ZAM_split_4$RA_adult)
+
+adult_cols <- names(df_ZAM_split_4$RA_adult)
+
+# To place before access_to_information_introduction, insert at position pos_access_info_intro - 1
+cols_before <- adult_cols[1:(pos_access_info_intro - 1)]
+cols_after <- adult_cols[pos_access_info_intro:length(adult_cols)]
+cols_after <- cols_after[!is.na(cols_after)]
+
+remittance_recipient_cols <- setdiff(names(remittance_recipient_df), "_uuid")
+cols_after <- setdiff(cols_after, remittance_recipient_cols)
+
+cols_ordered <- c(cols_before, remittance_recipient_cols, cols_after)
+
+test_df_RA <- df_ZAM_split_4$RA_adult %>%
+  left_join(remittance_recipient_df, by = "_uuid") %>%
+  select(all_of(cols_ordered))
+
+
+df_ZAM_split_4$RA_adult <- test_df_RA
+```
+
+```{r}
+# "rptEduc16_17" - RA_adult, after EducR15
+
+# Prepare rptEduc16_17 dataset, drop unwanted columns
+rptEduc16_17_df <- df_ZAM_clean_repeat_HH_3$rptEduc16_17 %>%
+  select(-c(`_parent_index`, `_parent_table_name`, source, Intro_06))
+
+pos_educR15 <- which(names(df_ZAM_split_4$RA_adult) == "EducR15")
+if (length(pos_educR15) == 0) pos_educR15 <- ncol(df_ZAM_split_4$RA_adult)
+
+adult_cols <- names(df_ZAM_split_4$RA_adult)
+cols_before <- adult_cols[1:pos_educR15]
+cols_after <- adult_cols[(pos_educR15 + 1):length(adult_cols)]
+cols_after <- cols_after[!is.na(cols_after)]
+
+rptEduc16_17_cols <- setdiff(names(rptEduc16_17_df), "_uuid")
+cols_after <- setdiff(cols_after, rptEduc16_17_cols)
+
+cols_ordered <- c(cols_before, rptEduc16_17_cols, cols_after)
+
+test_df_RA <- df_ZAM_split_4$RA_adult %>%
+  left_join(rptEduc16_17_df, by = "_uuid") %>%
+  select(all_of(cols_ordered))
+
+df_ZAM_split_4$RA_adult <- test_df_RA
+
+```
+
+```{r}
+saveRDS(df_ZAM_split_4, "df_ZAM_split_4.rds")
+```
+
+###Step 4.3 - Create roster 
+
+```{r}
+df_hhroster_other <- list()
+```
+
+
+```{r}
+
+#Clean and Merge hhroster with HHmemberInfo, as well as create a dataset for storing rows which do not have a match in household member. 
+
+#Clean hh roster and HHmemberInfo before merge 
+
+# Variables to keep from hhroster
+vars_to_keep <- c(
+  "_uuid", "source", "hhrosternote", "hhroster_memberID", "relchoice",
+  "qHH01b_lbl", "qHH01b_lbl_swahili", "qHH01b_lbl_bemba", "qHH01b_lbl_nyanja",
+  "qHH01b_lbl_french", "HH_01b", "Headn", "Headn_french", "Headn_swahili",
+  "Headn_bemba", "Headn_nyanja", "forceselect", "HH_03", "HH_03_other",
+  "headpos", "HH_03_spouse", "assignpouse"
+)
+
+# Filter hhroster columns if they exist
+hhroster_df <- df_ZAM_clean_repeat_HH_3$hhroster %>%
+  select(any_of(vars_to_keep))
+
+# Variables to keep from HHmemberInfo
+vars_memberinfo_keep <- c(
+  "source", "_uuid", "memberPosition", "memberName", "memberrel", "areyou", "wereyou", "your",
+  "haveyou", "you", "you_french", "doyou", "your2", "your2_french", "etevous", "avezvous",
+  "avezvous2", "votresa", "HH_02_french", "vousarrive", "vousvenu", "vousvivez", "penssezvous",
+  "vousavez", "youwere", "otherinfo", "HH_04_bemba", "HH_04_swahili", "HH_04_nyanja",
+  "HH_02_swahili", "HH_02_bemba", "HH_02_nyanja", "HH_02", "HH_04", "todaymonth", "HH_05",
+  "noteHH_05_bemba", "noteHH_05_swahili", "noteHH_05_nyanja", "noteHH_05", "HH_05_year",
+  "HH_05_month", "dobHH05", "dobHH05b", "agetouse", "monthagetouse", "member10years",
+  "memberless15years", "less15yearsFemale", "less18yearsFemale", "less18yearsMale",
+  "member15years", "member18years", "member5years", "memberless5years", "memberless5ycnt",
+  "member5n17", "member5n17In", "HH_00_bemba", "HH_00_swahili", "HH_00_nyanja", "HH_00",
+  "HH_00a", "noteHH_00a_bemba", "noteHH_00a_swahili", "noteHH_00a_nyanja", "noteHH_00a",
+  "HH_00a_year", "HH_00a_month", "HH_00b", "HH_00b_lbl", "HH_00b_lbl_french", "noteHH_00b",
+  "HH_00b_year", "HH_00b_month", "HH_00ab_year", "diffHH_00a_current", "diffHH_00a_year",
+  "diffHH_00a_month", "HH_11a_lbl", "HH_11a_lbl_french", "HH_11a", "HH_11a_bemba",
+  "HH_11a_swahili", "HH_11a_nyanja", "HH_11b_bemba", "HH_11b_swahili", "HH_11b_nyanja",
+  "HH_11aa_bemba", "HH_11aa_nyanja", "HH_11aa_swahili", "HH_11aa", "HH_11aa_specify",
+  "HH_11b", "HH_00binmonth", "diffTimeAbs", "member", "memberlbl", "memberlbl_french",
+  "membernote", "member5n17_2", "HH_13_bemba", "HH_13_swahili", "HH_13_nyanja", "HH_13",
+  "mobileaway", "mobileback", "mobilemember", "name_mobileaway", "name_mobileback",
+  "mobileawayT", "mobilebackT", "mobilememberT", "mobilememberTU"
+)
+
+# Filter HHmemberInfo columns if they exist
+hhmemberinfo_df <- df_ZAM_clean_repeat_HH_3$HHmemberInfo %>%
+  select(any_of(vars_memberinfo_keep))
+
+# Rename HHmemberInfo join key for consistency
+hhmemberinfo_df <- hhmemberinfo_df %>%
+  rename(hhroster_memberID = memberPosition)
+
+# Join, keep all rows from hhroster_df
+hhroster <- hhroster_df %>%
+  left_join(hhmemberinfo_df, by = c("_uuid", "hhroster_memberID"))
+
+# Find HHmemberInfo rows NOT matched in hhroster (anti join)
+df_hhroster_other$hhroster_other <- anti_join(hhmemberinfo_df, hhroster_df,
+                            by = c("_uuid", "hhroster_memberID"))
+
+
+```
+
+
+###Merge in identification_questions_repeat
+
+```{r}
+vars_to_keep_iden_repeat <- c(
+  "_uuid", "source",
+  "mPosition", "ID_rel", "m_name", "ID_member", "ID_HH_00", "ID_age", "ID_areyou", "ID_wereyou",
+  "ID_youwere", "ID_your", "ID_haveyou", "ID_you", "ID_your2", "ID_dodoes", "ID_etesvous",
+  "ID_avezvous", "ID_votreson", "ID_vousavez", "ID_etesvous2", "ID_vousvoulez", "ID_vouspouvez",
+  "ID_vousluielle", "ID_vousnepouvez", "ID_vouspermet",
+  "ID_00_bemba", "ID_01a_bemba", "ID_01a_2_bemba", "ID_01b_bemba", "ID_01b_2_bemba", "ID_02_bemba",
+  "ID_02b_bemba", "ID_03_bemba", "ID_04_bemba", "ID_05_bemba", "ID_06_bemba", "ID_06a_bemba",
+  "ID_06b_bemba", "ID_07_bemba", "ID_08_bemba", "ID_09_bemba", "ID_13_bemba",
+  "ID_17a_bemba", "ID_17b_bemba", "ID_17c_bemba", "ID_17d_bemba",
+  "ID_00_swahili", "ID_01a_swahili", "ID_01a_2_swahili", "ID_01b_swahili", "ID_01b_2_swahili",
+  "ID_02_swahili", "ID_02b_swahili", "ID_03_swahili", "ID_04_swahili", "ID_05_swahili",
+  "ID_06_swahili", "ID_06a_swahili", "ID_06b_swahili", "ID_07_swahili", "ID_08_swahili",
+  "ID_09_swahili", "ID_13_swahili",
+  "ID_17a_swahili", "ID_17b_swahili", "ID_17c_swahili", "ID_17d_swahili",
+  "ID_00_nyanja", "ID_01a_nyanja", "ID_01a_2_nyanja", "ID_01b_nyanja", "ID_01b_2_nyanja",
+  "ID_02_nyanja", "ID_02b_nyanja", "ID_03_nyanja", "ID_04_nyanja", "ID_05_nyanja",
+  "ID_06_nyanja", "ID_06a_nyanja", "ID_06b_nyanja", "ID_07_nyanja", "ID_08_nyanja",
+  "ID_09_nyanja", "ID_13_nyanja",
+  "ID_17a_nyanja", "ID_17b_nyanja", "ID_17c_nyanja", "ID_17d_nyanja",
+  "gpIdenQ", "ID_00", "ID_00_specify", "ID_00_specify_c", "ctz", "citizenctr", "ID_01a",
+  "ID_01a_2", "ID_01b", "ID_01b_2", "abroad_inhostcountry", "abroad_inhostcountry_french",
+  "ID_02", "ID_02_other", "ID_02b", "ID_02b_specify", "ID_03", "ID_04", "ID_05",
+  "ID_06", "ID_06a", "ID_06a_specify", "ID_06b", "ID_06b_specify", "ID_07",
+  "ID_08", "ID_08_specify", "ID_09", "ID_09_specify", "ID_09_note", "ID_09_note2",
+  "ID_10", "ID_11", "ID_11_picture", "ID_12", "ID_12a0", "ID_12a1", "ID_12a2",
+  "ID_17a", "ID_17aa", "ID_17ab", "ID_17ab_picture", "ID_17ac", "ID_17b", "ID_17ba",
+  "ID_17bb", "ID_17bb_picture", "ID_17bc", "ID_17c", "ID_17ca", "ID_17cb", "ID_17cc",
+  "ID_17cc_picture", "ID_17cd", "ID_17d", "ID_17da", "ID_17db", "ID_17db_picture",
+  "ID_17dc", "ID_VAR_allgroups_proxy", "ID_VAR_nondisplaced_proxy", "ID_VAR_DisplFor_proxy",
+  "ID_VAR_DisplNat_proxy", "ID_VAR", "ID_VAR_labeltext",
+  "memberrefugee", "memberformerrefugee", "memberhostpick", "ID_09_ref", "ID_09_ref_all",
+  "ID_09_formerrefugee", "ID_09_formerrefugee_all", "ID_09_host", "ID_09_host_all",
+  "ref_spouse"
+)
+
+df_identification_questions_repeat <- df_ZAM_clean_repeat_HH_3$identification_questions_repeat %>%
+  select(any_of(vars_to_keep_iden_repeat))
+```
+```{r}
+# Rename mPosition for join key consistency
+df_identification_questions_repeat<- df_identification_questions_repeat %>%
+  rename(hhroster_memberID = mPosition)
+
+# Join with hhroster by _uuid and hhroster_memberID, keep all hhroster rows
+hhroster <- hhroster %>%
+  left_join(df_identification_questions_repeat, by = c("_uuid", "hhroster_memberID"))
+
+# Identify identification repeat rows not matched in hhroster
+df_hhroster_other$identification_questions_repeat_other <- anti_join(df_identification_questions_repeat, hhroster,
+                                              by = c("_uuid", "hhroster_memberID"))
+```
+
+###Merge in rosterPart2
+
+```{r}
+library(dplyr)
+
+vars_to_keep_rosterPart2 <- c(
+  "_uuid", "source",
+  "membPosition", "membName", "membstatus", "ID_00rP", "ID_00_lbl", "ageind",
+  "membstatusnote", "membrel", "sexMemb", "ageHoH", "sexHoH", "wereyou1", "your1",
+  "haveyou1", "areyouisname1", "you1", "doyou1", "doesyour1", "your21", "n_etesvous2",
+  "n_vousavez", "n_votreepoux", "n_votreconjoint", "n_vousavez2", "n_avezvous2",
+  "n_avezvous3", "n_merebio", "n_perebio", "n_aviezvous", "n_status", "n_vousvouetes",
+  "n_avezvous4", "n_avezvous5", "gprpt2",
+  "HH_06_bemba", "HH_07b_bemba", "HH_07a_bemba", "HH_08_bemba", "HH_08a_bemba",
+  "HH_08b_bemba", "HH_09_bemba", "HH_10_bemba", "HH_15_bemba", "HH_16_bemba",
+  "HH_17_bemba", "HH_18_bemba", "HH_19_bemba", "HH_20_bemba", "HH_21_bemba",
+  "HH_22_bemba", "HH_23_bemba", "HH_24_bemba", "HH_25_bemba", "HH_27_bemba",
+  "HH_28_bemba", "HH_29_bemba",
+  "HH_06_swahili", "HH_07b_swahili", "HH_07a_swahili", "HH_08_swahili", "HH_08a_swahili",
+  "HH_08b_swahili", "HH_09_swahili", "HH_10_swahili", "HH_15_swahili", "HH_16_swahili",
+  "HH_17_swahili", "HH_18_swahili", "HH_19_swahili", "HH_20_swahili", "HH_21_swahili",
+  "HH_22_swahili", "HH_23_swahili", "HH_24_swahili", "HH_25_swahili", "HH_27_swahili",
+  "HH_28_swahili", "HH_29_swahili",
+  "HH_06_nyanja", "HH_07b_nyanja", "HH_07a_nyanja", "HH_08_nyanja", "HH_08a_nyanja",
+  "HH_08b_nyanja", "HH_09_nyanja", "HH_10_nyanja", "HH_15_nyanja", "HH_16_nyanja",
+  "HH_17_nyanja", "HH_18_nyanja", "HH_19_nyanja", "HH_20_nyanja", "HH_21_nyanja",
+  "HH_22_nyanja", "HH_23_nyanja", "HH_24_nyanja", "HH_25_nyanja", "HH_27_nyanja",
+  "HH_28_nyanja", "HH_29_nyanja",
+  "HH_06", "HH_06_1", "HH_06_specify", "HH_07b", "HH_07a", "HH_08", "HH_08a",
+  "HH_08b_cond", "HH_08b", "marStatus", "HH_09", "HH_10", "HH_15", "HH_16",
+  "HH_16_specify_lbl", "HH_16_specify_lbl_French", "HH_16_specify", "HH_17",
+  "skip_01", "skip_02", "HH_18", "HH_19", "HH_20", "HH_21", "HH_22", "HH_23",
+  "HH_24", "HH_25", "HH_26", "HH_26name", "HH_27", "womanbirth", "womanb",
+  "HH_28", "childchildren", "childchildren_french", "HH_29"
+)
+
+df_rosterPart2 <- df_ZAM_clean_repeat_HH_3$rosterPart2 %>%
+  select(any_of(vars_to_keep_rosterPart2))
+
+```
+
+```{r}
+# Rename mPosition for join key consistency
+df_rosterPart2<- df_rosterPart2 %>%
+  rename(hhroster_memberID = membPosition)
+
+# Join with hhroster by _uuid and hhroster_memberID, keep all hhroster rows
+hhroster <- hhroster %>%
+  left_join(df_rosterPart2, by = c("_uuid", "hhroster_memberID"))
+
+# Identify  repeat rows not matched in hhroster
+df_hhroster_other$df_rosterPart2_other <- anti_join(df_rosterPart2, hhroster,
+                                              by = c("_uuid", "hhroster_memberID"))
+```
+
+###Merge in Education
+
+```{r}
+
+vars_to_keep_education <- c(
+  "_uuid", "source",
+  "membPosit", "membNamed", "membstatuseduc", "ageindd", "areyou2", "haveyou2",
+  "you2", "youhave2", "your22", "yourtheir", "educ_etesvous", "educ_vousetes",
+  "educ_etesvous2", "educ_frequente", "educ_frequente2", "educ_vousallez", "educ_avezvous2",
+  "educ_vousnetes", "educ_vousavez", "educ_etudes", "educ_pouvezvous", "educ_votreson",
+  "HH_Educ00_bemba", "HH_Educ02a_bemba", "HH_Educ02b_bemba", "HH_Educ03_bemba",
+  "HH_Educ04a_bemba", "HH_Educ04b_bemba", "HH_Educ05_bemba", "HH_Educ07_bemba",
+  "HH_Educ09_bemba", "HH_Educ10_bemba", "HH_Educ15a_bemba", "HH_Educ16_bemba",
+  "HH_Educ17_bemba", "HH_Educ18_bemba", "HH_Educ23_bemba",
+  "HH_Educ00_swahili", "HH_Educ02a_swahili", "HH_Educ02b_swahili", "HH_Educ03_swahili",
+  "HH_Educ04a_swahili", "HH_Educ04b_swahili", "HH_Educ05_swahili", "HH_Educ07_swahili",
+  "HH_Educ09_swahili", "HH_Educ10_swahili", "HH_Educ15a_swahili", "HH_Educ16_swahili",
+  "HH_Educ17_swahili", "HH_Educ18_swahili", "HH_Educ23_swahili",
+  "HH_Educ00_nyanja", "HH_Educ02a_nyanja", "HH_Educ02b_nyanja", "HH_Educ03_nyanja",
+  "HH_Educ04a_nyanja", "HH_Educ04b_nyanja", "HH_Educ05_nyanja", "HH_Educ07_nyanja",
+  "HH_Educ09_nyanja", "HH_Educ10_nyanja", "HH_Educ15a_nyanja", "HH_Educ16_nyanja",
+  "HH_Educ17_nyanja", "HH_Educ18_nyanja", "HH_Educ23_nyanja",
+  "Educ", "Educ_begin", "educnote1", "HH_Educ00", "HH_Educ01", "HH_Educ01_other",
+  "HH_Educ02a", "HH_Educ02b", "HH_Educ02c", "HH_Educ03", "HH_Educ03lbl", "HH_Educ04a",
+  "HH_Educ04a_other", "HH_Educ04b", "HH_Educ05", "HH_Educ06", "HH_Educ06_other",
+  "HH_Educ07", "HH_Educ09", "HH_Educ09_other", "HH_Educ10", "HH_Educ14", "HH_Educ15a",
+  "HH_Educ15b", "HH_Educ16", "HH_Educ16_other", "HH_Educ17", "HH_Educ17_other",
+  "HH_Educ", "educ_code", "educ_codeTU", "HH_Educ18", "educlevel", "educlevel2",
+  "HH_Educ18lbl", "educlevel_lbl", "HH_Educ23"
+)
+
+df_Education <- df_ZAM_clean_repeat_HH_3$Education %>%
+  select(any_of(vars_to_keep_education))
+
+```
+
+```{r}
+
+# Rename mPosition for join key consistency
+df_Education<- df_Education %>%
+  rename(hhroster_memberID = membPosit)
+
+# Join with hhroster by _uuid and hhroster_memberID, keep all hhroster rows
+hhroster <- hhroster %>%
+  left_join(df_Education, by = c("_uuid", "hhroster_memberID"))
+
+# Identify  repeat rows not matched in hhroster
+df_hhroster_other$df_Education_other <- anti_join(df_Education, hhroster,
+                                              by = c("_uuid", "hhroster_memberID"))
+```
+
+
+###Merge in lang
+
+```{r}
+
+vars_to_keep_lang <- c(
+  "_uuid", "source",
+  "memPosit", "memNam", "membstatlan", "ageindla", "HH_educ02alan", "haveyou3", "you3",
+  "lan_comprend", "lan_utilisez", "lan_pouvez", "lan_avezvous", "languagegp", "languagenote",
+  "languagenote_bemba", "instruc_bemba", "instruc2_bemba", "HH_Lang04a_bemba",
+  "HH_Lang04b_bemba", "HH_Lang04bb_bemba", "languagenote_swahili", "instruc_swahili",
+  "instruc2_swahili", "HH_Lang04a_swahili", "HH_Lang04b_swahili", "HH_Lang04bb_swahili",
+  "languagenote_nyanja", "instruc_nyanja", "instruc2_nyanja", "HH_Lang04a_nyanja",
+  "HH_Lang04b_nyanja", "HH_Lang04bb_nyanja", "instruc", "gp1language", "HH_Lang02option",
+  "HH_Lang02a", "HH_Lang02b", "HH_Lang02n", "HH_Lang02m", "HH_Lang02e", "HH_Lang02f",
+  "HH_Lang02g", "HH_Lang02h", "instruc2", "gp2language", "HH_Lang03option", "HH_Lang03a",
+  "HH_Lang03b", "HH_Lang03n", "HH_Lang03m", "HH_Lang03e", "HH_Lang03f", "HH_Lang03g",
+  "HH_Lang03h", "HH_Lang04a", "HH_Lang04b", "HH_Lang04b_specify"
+)
+
+df_lang <- df_ZAM_clean_repeat_HH_3$lang %>%
+  select(any_of(vars_to_keep_lang))
+
+```
+
+```{r}
+
+# Rename mPosition for join key consistency
+df_lang<- df_lang %>%
+  rename(hhroster_memberID = memPosit)
+
+# Join with hhroster by _uuid and hhroster_memberID, keep all hhroster rows
+hhroster <- hhroster %>%
+  left_join(df_lang, by = c("_uuid", "hhroster_memberID"))
+
+# Identify  repeat rows not matched in hhroster
+df_hhroster_other$df_lang_other <- anti_join(df_lang, hhroster,
+                                              by = c("_uuid", "hhroster_memberID"))
+```
+
+###Merge in disability repeats 
+
+1. dis_seeing
+
+```{r}
+
+vars_to_keep_dis_see <- c(
+  "_uuid", "source",
+  "calculate_dis_seeing_person", "calculate_dis_seeing_person_french", "Dis_03"
+)
+
+df_dis_seeing <- df_ZAM_clean_repeat_HH_3$dis_seeing %>%
+  select(any_of(vars_to_keep_dis_see))
+```
+```{r}
+#Create a new coloumn to extract the numerical member position for merge 
+df_dis_seeing <- df_dis_seeing %>%
+  mutate(hhroster_memberID = as.integer(str_extract(calculate_dis_seeing_person, "^[0-9]+")))
+```
+
+```{r}
+# Join with hhroster by _uuid and hhroster_memberID, keep all hhroster rows
+hhroster <- hhroster %>%
+  left_join(df_dis_seeing, by = c("_uuid", "hhroster_memberID"))
+
+# Identify repeat rows not matched in hhroster
+df_hhroster_other$df_dis_seeing_other <- anti_join(df_dis_seeing, hhroster,
+                                              by = c("_uuid", "hhroster_memberID"))
+
+```
+
+2. dis_hearing
+
+```{r}
+
+vars_to_keep_dis_hear <- c(
+  "_uuid", "source",
+  "calculate_dis_hearing_person", "calculate_dis_hearing_person_french", "Dis_06"
+)
+
+df_dis_hearing <- df_ZAM_clean_repeat_HH_3$dis_hearing %>%
+  select(any_of(vars_to_keep_dis_hear))
+```
+```{r}
+#Create a new coloumn to extract the numerical member position for merge 
+df_dis_hearing <- df_dis_hearing %>%
+  mutate(hhroster_memberID = as.integer(str_extract(calculate_dis_hearing_person, "^[0-9]+")))
+```
+
+```{r}
+# Join with hhroster by _uuid and hhroster_memberID, keep all hhroster rows
+hhroster <- hhroster %>%
+  left_join(df_dis_hearing, by = c("_uuid", "hhroster_memberID"))
+
+# Identify repeat rows not matched in hhroster
+df_hhroster_other$df_dis_hearing_other <- anti_join(df_dis_hearing, hhroster,
+                                              by = c("_uuid", "hhroster_memberID"))
+
+```
+
+3. dis_walking
+
+```{r}
+
+vars_to_keep_dis_walk <- c(
+  "_uuid", "source",
+  "calculate_dis_walking_person", "calculate_dis_walking_person_french", "Dis_09"
+)
+
+df_dis_walking <- df_ZAM_clean_repeat_HH_3$dis_walking %>%
+  select(any_of(vars_to_keep_dis_walk))
+```
+```{r}
+#Create a new coloumn to extract the numerical member position for merge 
+df_dis_walking <- df_dis_walking %>%
+  mutate(hhroster_memberID = as.integer(str_extract(calculate_dis_walking_person, "^[0-9]+")))
+```
+
+```{r}
+# Join with hhroster by _uuid and hhroster_memberID, keep all hhroster rows
+hhroster <- hhroster %>%
+  left_join(df_dis_walking, by = c("_uuid", "hhroster_memberID"))
+
+# Identify repeat rows not matched in hhroster
+df_hhroster_other$df_dis_walking_other <- anti_join(df_dis_walking, hhroster,
+                                              by = c("_uuid", "hhroster_memberID"))
+
+```
+
+4. dis_remembering
+
+```{r}
+
+vars_to_keep_dis_remember <- c(
+  "_uuid", "source",
+  "calculate_dis_remembering_person", "calculate_dis_remembering_person_french", "Dis_12", "pouvezDIS"
+)
+
+df_dis_remembering <- df_ZAM_clean_repeat_HH_3$dis_remembering %>%
+  select(any_of(vars_to_keep_dis_remember))
+```
+```{r}
+#Create a new coloumn to extract the numerical member position for merge 
+df_dis_remembering <- df_dis_remembering %>%
+  mutate(hhroster_memberID = as.integer(str_extract(calculate_dis_remembering_person, "^[0-9]+")))
+```
+
+```{r}
+# Join with hhroster by _uuid and hhroster_memberID, keep all hhroster rows
+hhroster <- hhroster %>%
+  left_join(df_dis_remembering, by = c("_uuid", "hhroster_memberID"))
+
+# Identify repeat rows not matched in hhroster
+df_hhroster_other$df_dis_remembering_other <- anti_join(df_dis_remembering, hhroster,
+                                              by = c("_uuid", "hhroster_memberID"))
+
+```
+
+5. dis_self_care
+
+```{r}
+
+vars_to_keep_dis_selfcare <- c(
+  "_uuid", "source",
+  "calculate_dis_selfcare_person", "calculate_dis_selfcare_person_french", "Dis_15", "pouvezDIS2"
+)
+
+df_dis_selfcare <- df_ZAM_clean_repeat_HH_3$dis_self_care %>%
+  select(any_of(vars_to_keep_dis_selfcare))
+```
+```{r}
+#Create a new coloumn to extract the numerical member position for merge 
+df_dis_selfcare <- df_dis_selfcare %>%
+  mutate(hhroster_memberID = as.integer(str_extract(calculate_dis_selfcare_person, "^[0-9]+")))
+```
+
+```{r}
+# Join with hhroster by _uuid and hhroster_memberID, keep all hhroster rows
+hhroster <- hhroster %>%
+  left_join(df_dis_selfcare, by = c("_uuid", "hhroster_memberID"))
+
+# Identify repeat rows not matched in hhroster
+df_hhroster_other$df_dis_selfcare_other <- anti_join(df_dis_selfcare, hhroster,
+                                              by = c("_uuid", "hhroster_memberID"))
+
+```
+
+6. dis_communicating
+
+```{r}
+
+vars_to_keep_dis_communicating <- c(
+  "_uuid", "source",
+  "calculate_dis_communicating_person", "calculate_dis_communicating_person_french", "Dis_18", "pouvezDIS3"
+)
+
+df_dis_communicating <- df_ZAM_clean_repeat_HH_3$dis_communicating %>%
+  select(any_of(vars_to_keep_dis_communicating))
+```
+```{r}
+#Create a new coloumn to extract the numerical member position for merge 
+df_dis_communicating <- df_dis_communicating %>%
+  mutate(hhroster_memberID = as.integer(str_extract(calculate_dis_communicating_person, "^[0-9]+")))
+```
+
+```{r}
+# Join with hhroster by _uuid and hhroster_memberID, keep all hhroster rows
+hhroster <- hhroster %>%
+  left_join(df_dis_communicating, by = c("_uuid", "hhroster_memberID"))
+
+# Identify repeat rows not matched in hhroster
+df_hhroster_other$df_dis_communicating_other <- anti_join(df_dis_communicating, hhroster,
+                                              by = c("_uuid", "hhroster_memberID"))
+
+```
+
+Now we add the final roster to the list of 5 dataframes.
+
+```{r}
+ZAM_5_datasets_5 <- list()
+ZAM_5_datasets_5$HHroster <- hhroster
+ZAM_5_datasets_5$RA_adult <- df_ZAM_split_4$RA_adult
+ZAM_5_datasets_5$main <- df_ZAM_split_4$main
+ZAM_5_datasets_5$RA_woman <- df_ZAM_split_4$RA_woman
+ZAM_5_datasets_5$RA_caregiver <- df_ZAM_split_4$RA_caregiver
+```
+```{r}
+saveRDS(ZAM_5_datasets_5, "ZAM_5_datasets_5.rds")
+```
+```{r}
+#Also save the dataset with all the rows which were not merged when creating roster due to being extra - no match in the hh member 
+saveRDS(df_hhroster_other, "df_hhroster_other.rds")
+```
+
+```{r}
+#And save the mobile member repeat group separately for future use
+gp_migrant_repeat <- df_ZAM_clean_repeat_HH_3$gp_migrant
+saveRDS(gp_migrant_repeat, "gp_migrant_repeat.rds")
+
+```
+

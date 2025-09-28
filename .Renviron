@@ -1,0 +1,5 @@
+#KOBOTOOLBOX_URL=https://kobo.unhcr.org
+#KOBOTOOLBOX_TOKEN=XXX
+
+
+kobo_token = kobo_token(username = "XXX",  password = "XXX", url = "XXX")
