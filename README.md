@@ -87,4 +87,4 @@ Utility functions for Kobo data ingestion and preparation. Includes retrieval of
 | 12 | [`12_WI_ZAM.R`](12_WI_ZAM.R) | Calculates wealth index |
 
   
-  
+Link to repository: [Data Management Example](https://github.com/KPetragit/Data_Management_Example)
